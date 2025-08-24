@@ -10,7 +10,7 @@ OUTDIR="data-mistral-7b-instruct-sppo-iter1"
 
 PAIRS=5
 FRAC=0
-PROMPTS="/home/hungpv/projects/lab/DTW-v2/data/dolly/train.jsonl"
+PROMPTS="/kaggle/working/data/dolly/train.jsonl"
 
 USE_TEACHER_LLM=""
 TEACHER_MODEL=""
@@ -78,7 +78,7 @@ echo "Using frac_len ${FRAC_LEN}"
 (
     data_frac=0
     for gpu_id in ${AVAILABLE_GPUS[@]}; do
-        CUDA_VISIBLE_DEVICES=$gpu_id python3 scripts/generate.py --model $MODEL --maxlen 256 --output_dir "generated/$OUTDIR" --prompts $PROMPTS --pairs $PAIRS --world_size 1 --frac_len $FRAC_LEN --data_frac $data_frac > output_log_${gpu_id}.txt 2>&1 &
+        CUDA_VISIBLE_DEVICES=$gpu_id python3 /kaggle/working/sppo-dskd-v3/scripts/generate.sh --model $MODEL --maxlen 256 --output_dir "generated/$OUTDIR" --prompts $PROMPTS --pairs $PAIRS --world_size 1 --frac_len $FRAC_LEN --data_frac $data_frac > output_log_${gpu_id}.txt 2>&1 &
         ((data_frac+=1));
     done
     wait
@@ -87,7 +87,7 @@ all_gen=$!
 
 wait $all_gen
 
-python3 scripts/combine_generate.py --output_dir "generated/$OUTDIR" --gpu_ids "$(IFS=, ; echo "${AVAILABLE_GPUS[*]}")" --pairs $PAIRS
+python3 /kaggle/working/sppo-dskd-v3/scripts/combine_generate.py --output_dir "generated/$OUTDIR" --gpu_ids "$(IFS=, ; echo "${AVAILABLE_GPUS[*]}")" --pairs $PAIRS
 
 
 # #####################
@@ -96,12 +96,12 @@ python3 scripts/combine_generate.py --output_dir "generated/$OUTDIR" --gpu_ids "
 
 # # frac length 2600 * num_gpus 8 = 20800, should be larger than the length of the dataset. Change frac_len accordingly when dataset changes
 
-python3 scripts/preload.py
+python3 /kaggle/working/sppo-dskd-v3/scripts/preload.py
 
 (
     data_frac=0
     for gpu_id in ${AVAILABLE_GPUS[@]}; do
-        CUDA_VISIBLE_DEVICES=$gpu_id python3 scripts/rank.py --model $MODEL --output_dir $OUTDIR --pairs $PAIRS --numgpu ${#AVAILABLE_GPUS[@]} --frac_len $FRAC_LEN --data_frac $data_frac --gpu $gpu_id --prompts $PROMPTS $USE_TEACHER_LLM $TEACHER_MODEL $BATCH_SIZE $TENSOR_PARALLEL_SIZE $BT_METHOD > rank_log_${gpu_id}.txt 2>&1 &
+        CUDA_VISIBLE_DEVICES=$gpu_id python3 /kaggle/working/sppo-dskd-v3/scripts/rank.py --model $MODEL --output_dir $OUTDIR --pairs $PAIRS --numgpu ${#AVAILABLE_GPUS[@]} --frac_len $FRAC_LEN --data_frac $data_frac --gpu $gpu_id --prompts $PROMPTS $USE_TEACHER_LLM $TEACHER_MODEL $BATCH_SIZE $TENSOR_PARALLEL_SIZE $BT_METHOD > rank_log_${gpu_id}.txt 2>&1 &
         ((data_frac+=1));
     done
     wait
@@ -110,4 +110,4 @@ all_rank=$!
 
 wait $all_rank
 
-python3 scripts/compute_prob.py --gpu_ids "$(IFS=, ; echo "${AVAILABLE_GPUS[*]}")" --output_dir $OUTDIR --pairs $PAIRS --frac_len $FRAC_LEN --prompts $PROMPTS
+python3 /kaggle/working/sppo-dskd-v3/scripts/compute_prob.py --gpu_ids "$(IFS=, ; echo "${AVAILABLE_GPUS[*]}")" --output_dir $OUTDIR --pairs $PAIRS --frac_len $FRAC_LEN --prompts $PROMPTS
