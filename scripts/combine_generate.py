@@ -1,11 +1,12 @@
 import json
-import pandas as pd
 import argparse
+import os
 
 def parse_arguments():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser()
-    parser.add_argument('--output_dir', type=str, default='generated/iter1')
+    # default đổi sang /kaggle/working
+    parser.add_argument('--output_dir', type=str, default='/kaggle/working/generated/iter1')
     parser.add_argument("--pairs", type=int, default=5)
     parser.add_argument("--numgpu", type=int, default=8)
     parser.add_argument("--gpu_ids", type=str, default=None)
@@ -13,6 +14,8 @@ def parse_arguments():
 
 def main():
     args = parse_arguments()
+
+    os.makedirs(args.output_dir, exist_ok=True)
 
     for j in range(args.pairs):
         results = []
@@ -22,13 +25,13 @@ def main():
             gpus = range(args.numgpu)
 
         for i in gpus:
-            file_path = f"{args.output_dir}/responses_{i}_{j}.json"
+            file_path = os.path.join(args.output_dir, f"responses_{i}_{j}.json")
             print(f'Reading from {file_path}')
             with open(file_path) as f:
                 gen = json.load(f)
                 results += gen
 
-        output_path = f"{args.output_dir}/responses_{j}.json"
+        output_path = os.path.join(args.output_dir, f"responses_{j}.json")
         print(f'Saved to {output_path}')
         with open(output_path, "w") as f:
             json.dump(results, f)
