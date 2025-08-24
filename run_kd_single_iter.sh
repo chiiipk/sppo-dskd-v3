@@ -42,8 +42,8 @@ fi
 echo "=== Step 1: Generating and ranking responses ==="
 bash /kaggle/working/sppo-dskd-v3/scripts/generate.sh \
     --model $MODEL \
-    --prompts $PROMPT \
-    --output_dir $OUT \
+    --prompt $PROMPT \
+    --out_path $OUT \
     --use_teacher_llm \
     --teacher_model Qwen/Qwen1.5-1.8B-Chat \
     --batch_size 8 \
