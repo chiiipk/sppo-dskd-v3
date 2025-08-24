@@ -30,7 +30,7 @@ if [ ! -f "$PROMPT" ]; then
 fi
 
 echo "=== Step 1: Generating and ranking responses ==="
-bash scripts/generate.sh \
+bash /kaggle/working/sppo-dskd-v3/scripts/generate.sh \
     --model $MODEL \
     --prompt $PROMPT \
     --out_path $OUT \
@@ -41,7 +41,7 @@ bash scripts/generate.sh \
     --bt_conversion_method bradley_terry_mle
 
 echo "=== Step 2: Computing probabilities and preparing dataset ==="
-python3 scripts/compute_prob.py \
+python3 /kaggle/working/sppo-dskd-v3/scripts/compute_prob.py \
     --gpu_ids "0,1" \
     --output_dir $OUT \
     --pairs 5 \
@@ -49,7 +49,7 @@ python3 scripts/compute_prob.py \
     --prompts $PROMPT
 
 echo "=== Step 3: Training GPT-2 student model with SPPO ==="
-bash scripts/pipeline.sh \
+bash /kaggle/working/sppo-dskd-v3/scripts/pipeline.sh \
     --model $MODEL \
     --iter $ITER \
     --dataset $DATASET \
