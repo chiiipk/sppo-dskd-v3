@@ -11,7 +11,10 @@ OPTIM="rmsprop"
 PREF="sppo_score"
 NUM=18
 MODEL="mistralai/Mistral-7B-Instruct-v0.2"
-DATASET="synthetic_data_mistral-7b-instruct-sppo-iter1_score"
+
+# Dataset đầu vào (đã được sinh ở bước trước → mình để trong /kaggle/working/)
+DATASET="/kaggle/working/synthetic_data_mistral-7b-instruct-sppo-iter1_score"
+
 BATCH_SIZE=8
 ACCUMULATE=1
 
@@ -30,7 +33,7 @@ while [[ "$#" -gt 0 ]]; do
         shift
         ;;
     --output_dir)
-        OUTPUT_DIR="$2"
+        OUTPUT_DIR="/kaggle/working/$2"   # luôn ghi ra working dir
         shift
         ;;
     --iter)
@@ -78,25 +81,28 @@ PREF="${PREF}_${NUM}"
 LEVEL1="iter${ITER}_${LEARNING_RATE}_beta${BETA}_${OPTIM}"
 LEVEL2="${LOSS_TYPE}_${PREF}"
 
-#OUTPUT_DIR="checkpoints/${LEVEL1}/${LEVEL2}"
-log_file="iter${ITER}_${LEARNING_RATE}_${BETA}_${OPTIM}_${LOSS_TYPE}_${PREF}"
+# Output checkpoints → working dir
+OUTPUT_DIR="${OUTPUT_DIR:-/kaggle/working/checkpoints/${LEVEL1}/${LEVEL2}}"
 
-dataset_name=$(echo "$DATASET" | cut -d '/' -f2)
-new_config_file="recipes/uclaml-sppo/config_full_${dataset_name}.yaml"
+log_file="/kaggle/working/logs/iter${ITER}_${LEARNING_RATE}_${BETA}_${OPTIM}_${LOSS_TYPE}_${PREF}"
+mkdir -p "$(dirname "$log_file")"
 
-# Copy the original configuration file to the new one
-cp recipes/uclaml-sppo/config_full.yaml "$new_config_file"
+dataset_name=$(basename "$DATASET")
+new_config_file="/kaggle/working/config_full_${dataset_name}.yaml"
 
-python3 scripts/update_dataset.py --dataset $DATASET --config "$new_config_file" >"$log_file.log"
+# Copy config vào working dir để chỉnh sửa
+cp /kaggle/working/sppo-dskd-v3/recipes/uclaml-sppo/config_full.yaml "$new_config_file"
+
+python3 /kaggle/working/sppo-dskd-v3/scripts/update_dataset.py \
+    --dataset "$DATASET" \
+    --config "$new_config_file" >"$log_file.log"
 
 echo "logging to $log_file.log"
 
-# --main_process_port ${port} \
-
 ACCELERATE_LOG_LEVEL=info accelerate launch \
-    --config_file recipes/accelerate_configs/deepspeed_zero3.yaml \
+    --config_file /kaggle/working/sppo-dskd-v3/recipes/accelerate_configs/deepspeed_zero3.yaml \
     --main_process_port 2930 \
-    sppo/run_sppo.py "$new_config_file" \
+    /kaggle/working/sppo-dskd-v3/sppo/run_sppo.py "$new_config_file" \
     --learning_rate=$LEARNING_RATE \
     --beta=$BETA \
     --optim="$OPTIM" \
@@ -107,4 +113,3 @@ ACCELERATE_LOG_LEVEL=info accelerate launch \
     --gradient_accumulation_steps=$ACCUMULATE \
     --model_name_or_path=$MODEL \
     --num_train_epochs=$NUM
-# 2>&1 | tee "${log_file}.log"
