@@ -5,11 +5,11 @@ set -x
 
 echo "=== SINGLE ITERATION KNOWLEDGE DISTILLATION ==="
 
-CUSTOM_MODEL_PATH="/home/hungpv/projects/lab/hiii/gpt2"
+CUSTOM_MODEL_PATH="/kaggle/working/gpt2"
 ITER=1
 MODEL=$CUSTOM_MODEL_PATH
 OUTPUT_DIR="checkpoints/gpt2-kd-qwen-dolly-iter${ITER}"
-PROMPT="/home/hungpv/projects/lab/DTW-v2/data/dolly/train.jsonl"
+PROMPT="/kaggle/working/data/dolly/train.jsonl"
 OUT="kd-gpt2-qwen-dolly-iter${ITER}"
 DATASET="synthetic_data_gpt2-qwen-dolly-iter${ITER}_score"
 
