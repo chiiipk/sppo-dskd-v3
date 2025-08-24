@@ -5,13 +5,22 @@ set -x
 
 echo "=== SINGLE ITERATION KNOWLEDGE DISTILLATION ==="
 
+# Model gốc (student khởi tạo từ GPT-2 nhỏ)
 CUSTOM_MODEL_PATH="/kaggle/working/gpt2"
 ITER=1
 MODEL=$CUSTOM_MODEL_PATH
-OUTPUT_DIR="checkpoints/gpt2-kd-qwen-dolly-iter${ITER}"
+
+# Output/checkpoint để vào working dir
+OUTPUT_DIR="/kaggle/working/checkpoints/gpt2-kd-qwen-dolly-iter${ITER}"
+
+# Prompts phải từ input dataset
 PROMPT="/kaggle/working/data/dolly/train.jsonl"
-OUT="kd-gpt2-qwen-dolly-iter${ITER}"
-DATASET="synthetic_data_gpt2-qwen-dolly-iter${ITER}_score"
+
+# OUT: thư mục intermediate output (generated + ranking)
+OUT="/kaggle/working/kd-gpt2-qwen-dolly-iter${ITER}"
+
+# Dataset name sau khi compute_prob
+DATASET="/kaggle/working/synthetic_data_gpt2-qwen-dolly-iter${ITER}_score"
 
 echo "Configuration:"
 echo "  Model: $MODEL"
@@ -60,3 +69,5 @@ bash /kaggle/working/sppo-dskd-v3/scripts/pipeline.sh \
 
 echo "=== Single iteration complete! ==="
 echo "Checkpoint saved to: $OUTPUT_DIR"
+
+
