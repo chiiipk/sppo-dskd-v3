@@ -101,78 +101,72 @@ def from_ranks(args):
     df.to_parquet(os.path.join(out_dir, "train.parquet"))
 
 def prepare_score(args):
-    # SỬA LỖI: Bỏ dấu "/" ở đầu "generated/"
-    parquet_path = os.path.join(args.output_dir, "generated", "train.parquet")
-    print(f"Loading parquet file from: {parquet_path}")
-    train = datasets.load_dataset("parquet", data_files={"train": parquet_path})
-    train = pd.DataFrame(train['train'])
+    """
+    Loads intermediate parquet, filters for valid data, and creates the final training dataset
+    with the correct flattened string format.
+    """
+    base_output_dir = args.output_dir if args.output_dir.startswith('/') else os.path.join("/kaggle/working", args.output_dir)
+    generated_dir = os.path.join(base_output_dir, "generated")
+    parquet_path = os.path.join(generated_dir, "train.parquet")
 
-    # --- FIX CUỐI CÙNG: Lọc sâu để loại bỏ các giá trị None bên trong list/matrix ---
-    original_len = len(train)
+    if not os.path.exists(parquet_path):
+        print(f"Error: Intermediate parquet file not found at {parquet_path}.")
+        return None
 
-    def is_valid_matrix(matrix, pairs):
-        """Kiểm tra xem một ma trận có hợp lệ không (không None, đúng shape, và không chứa None bên trong)."""
-        if not isinstance(matrix, list) or len(matrix) != pairs:
-            return False
-        for row in matrix:
-            if not isinstance(row, list) or len(row) != pairs:
-                return False
-            if any(x is None for x in row): # Kiểm tra None bên trong từng hàng
-                return False
-        return True
-
-    def is_valid_scores(scores, pairs):
-        """Kiểm tra xem danh sách điểm số có hợp lệ không."""
-        if not isinstance(scores, list) or len(scores) != pairs:
-            return False
-        if any(x is None for x in scores): # Kiểm tra None bên trong danh sách
-            return False
-        return True
-
-    # Áp dụng các hàm lọc mạnh mẽ hơn
-    train = train[train['probability'].apply(lambda x: is_valid_matrix(x, args.pairs))]
-    train = train[train['rm_scores'].apply(lambda x: is_valid_scores(x, args.pairs))]
-
-    print(f"Filtered out {original_len - len(train)} invalid rows. {len(train)} valid rows remaining.")
+    train = pd.read_parquet(parquet_path)
     
+    # Lọc dữ liệu lỗi
+    original_len = len(train)
+    train.dropna(subset=['rm_scores', 'probability'], inplace=True)
+    train = train[train['rm_scores'].apply(lambda x: isinstance(x, list) and len(x) == args.pairs)]
+    
+    print(f"Filtered out {original_len - len(train)} invalid rows. {len(train)} valid rows remaining.")
     if len(train) == 0:
         print("Error: No valid data remaining after filtering. Cannot create final dataset.")
         return None
 
-    metrics = train['rm_scores'].apply(lambda x: np.array(x[-args.pairs:]))
-    metrics_prob = train['probability'].apply(lambda x: np.stack(x).sum(axis=1))
-    maxmin = metrics.apply(lambda x: [x.argmax(), x.argmin()])
+    metrics = train['rm_scores'].apply(lambda x: np.array(x))
+    maxmin_indices = metrics.apply(lambda x: [x.argmax(), x.argmin()])
 
-    train_ordered = train[[f"generate_{i}" for i in range(args.pairs)] + ['probability']]
+    # --- FIX CHÍNH: "LÀM PHẲNG" DỮ LIỆU TỪ ĐỊNH DẠNG HỘI THOẠI SANG VĂN BẢN ---
+    def flatten_conversation(conv_list):
+        """Chuyển đổi một danh sách hội thoại thành một chuỗi văn bản duy nhất."""
+        if not isinstance(conv_list, list) or len(conv_list) == 0:
+            return "" # Trả về chuỗi rỗng nếu dữ liệu không hợp lệ
+        # Giả định chúng ta chỉ cần nội dung của tin nhắn cuối cùng (của assistant)
+        return conv_list[-1].get('content', '')
 
-    chosen = [train_ordered.iloc[i, maxmin.iloc[i][0]] for i in range(len(train_ordered))]
-    rejected = [train_ordered.iloc[i, maxmin.iloc[i][1]] for i in range(len(train_ordered))]
-
-    chosen_probs = [train_ordered['probability'].iloc[i][maxmin.iloc[i][0]][maxmin.iloc[i][1]] for i in range(len(train_ordered))]
-    chosen_probs_win = [metrics_prob.iloc[i][maxmin.iloc[i][0]] / len(metrics_prob.iloc[0]) for i in range(len(metrics_prob))]
-    chosen_probs_lose = [metrics_prob.iloc[i][maxmin.iloc[i][1]] / len(metrics_prob.iloc[0]) for i in range(len(metrics_prob))]
-
-    train_new = pd.DataFrame({
-        'chosen': chosen,
-        'rejected': rejected,
-        'chosen_probs': chosen_probs,
-        'chosen_probs_win': chosen_probs_win,
-        'chosen_probs_lose': chosen_probs_lose
-    })
+    chosen_text, rejected_text = [], []
+    for i in range(len(train)):
+        idx_pair = maxmin_indices.iloc[i]
+        
+        # Lấy cột generate_X tương ứng
+        chosen_conversation = train[f"generate_{idx_pair[0]}"].iloc[i]
+        rejected_conversation = train[f"generate_{idx_pair[1]}"].iloc[i]
+        
+        # Áp dụng hàm làm phẳng
+        chosen_text.append(flatten_conversation(chosen_conversation))
+        rejected_text.append(flatten_conversation(rejected_conversation))
+        
+    # Tạo DataFrame cuối cùng với các cột VĂN BẢN
+    train_new = pd.DataFrame({'chosen': chosen_text, 'rejected': rejected_text})
     
-    # Lấy tên thư mục cuối cùng từ output_dir để đặt tên cho file synthetic
-    output_base_name = os.path.basename(os.path.normpath(args.output_dir))
-    OUTPATH = f'/kaggle/working/synthetic_data_{output_base_name}_score'
-    os.makedirs(OUTPATH, exist_ok=True)
+    # Các cột khác (nếu cần) có thể được thêm vào đây
+    # train_new['prompt'] = train['prompt'].apply(lambda x: x[0]['content']) # Ví dụ
 
-    train_new.to_parquet(f'{OUTPATH}/train.parquet', index=False)
-    print(f"Saved file to {OUTPATH}/train.parquet")
-
+    # Lưu dataset cuối cùng
+    output_base_name = os.path.basename(os.path.normpath(base_output_dir))
+    outpath = os.path.join('/kaggle/working', f'synthetic_data_{output_base_name}_score')
+    os.makedirs(outpath, exist_ok=True)
+    
+    train_new.to_parquet(os.path.join(outpath, 'train.parquet'), index=False)
+    print(f"Saved final training file to {os.path.join(outpath, 'train.parquet')}")
+    
     test = train_new.sample(n=min(500, len(train_new)))
-    test.to_parquet(f'{OUTPATH}/test.parquet', index=False)
-    print(f"Saved file to {OUTPATH}/test.parquet")
-
-    return OUTPATH
+    test.to_parquet(os.path.join(outpath, 'test.parquet'), index=False)
+    print(f"Saved final test file to {os.path.join(outpath, 'test.parquet')}")
+    
+    return outpath
 
 def push_dataset(file_dir, org):
     if file_dir is None:
