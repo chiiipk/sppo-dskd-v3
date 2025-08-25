@@ -14,8 +14,8 @@ ITER=1
 MODEL=$CUSTOM_MODEL_PATH
 # Output directories will be created inside /kaggle/working/
 OUTPUT_DIR="checkpoints/gpt2-kd-qwen-dolly-iter${ITER}"
-OUT="kd-gpt2-qwen-dolly-iter${ITER}"
-DATASET="synthetic_data_gpt2-qwen-dolly-iter${ITER}_score"
+OUT="kd-gpt2-qwen-dolly-iter1"
+DATASET="synthetic_data_${OUT}_score"
 
 echo "Configuration:"
 echo "  Model: $MODEL"
