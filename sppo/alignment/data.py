@@ -115,14 +115,7 @@ def get_datasets(
 def mix_datasets(dataset_mixer: dict, splits: Optional[List[str]] = None, shuffle=True) -> DatasetDict:
     """
     Loads and mixes datasets according to proportions specified in `dataset_mixer`.
-
-    Args:
-        dataset_mixer (`dict`):
-            Dictionary containing the dataset names and their training proportions. By default, all test proportions are 1.
-        splits (Optional[List[str]], *optional*, defaults to `None`):
-            Dataset splits to load and mix. Assumes the splits exist in all datasets and have a `train_` or `test_` prefix.
-        shuffle (`bool`, *optional*, defaults to `True`):
-            Whether to shuffle the training and testing/validation data.
+    This version is modified to prioritize loading local .parquet files.
     """
     raw_datasets = DatasetDict()
     raw_train_datasets = []
@@ -131,27 +124,31 @@ def mix_datasets(dataset_mixer: dict, splits: Optional[List[str]] = None, shuffl
     for ds, frac in dataset_mixer.items():
         fracs.append(frac)
         for split in splits:
-            try:
-                # Try first if dataset on a Hub repo
-                dataset = load_dataset(ds, split=split)
-            except (DatasetGenerationError, DatasetNotFoundError):
+            # --- FIX: ƯU TIÊN KIỂM TRA VÀ TẢI FILE PARQUET TRƯỚC TIÊN ---
+            parquet_path = os.path.join(ds, f"{split}.parquet")
+            
+            if os.path.exists(parquet_path):
+                # Nếu tìm thấy file parquet cục bộ, tải trực tiếp từ nó
+                print(f"Found local parquet file. Loading '{split}' split from: {parquet_path}")
+                dataset = load_dataset("parquet", data_files={split: parquet_path}, split=split)
+            else:
+                # Nếu không, thử các phương pháp khác (ví dụ: tải từ Hub)
                 try:
-                    dataset = load_from_disk(os.path.join(ds, split))
-                except (FileNotFoundError, OSError):
-                    import pandas as pd
-                    parquet_file = os.path.join(ds, f"{split}.parquet")
-                    if os.path.exists(parquet_file):
-                        df = pd.read_parquet(parquet_file)
-                        dataset = Dataset.from_pandas(df)
-                    else:
-                        raise FileNotFoundError(f"Could not find dataset at {ds} with split {split}")
-
+                    print(f"Local parquet file not found. Attempting to load '{ds}' from Hugging Face Hub...")
+                    dataset = load_dataset(ds, split=split)
+                except (DatasetNotFoundError, ValueError, FileNotFoundError):
+                    raise FileNotFoundError(
+                        f"Could not find a '{split}.parquet' file in directory '{ds}', "
+                        f"nor could the dataset be loaded from the Hugging Face Hub. Please check the path."
+                    )
+            
+            # Phân loại dataset vào train hoặc test
             if "train" in split:
                 raw_train_datasets.append(dataset)
             elif "test" in split:
                 raw_val_datasets.append(dataset)
             else:
-                raise ValueError(f"Split type {split} not recognized as one of test or train.")
+                raise ValueError(f"Split type '{split}' not recognized as 'train' or 'test'.")
 
     if any(frac < 0 for frac in fracs):
         raise ValueError("Dataset fractions cannot be negative.")
@@ -159,13 +156,16 @@ def mix_datasets(dataset_mixer: dict, splits: Optional[List[str]] = None, shuffl
     if len(raw_train_datasets) > 0:
         train_subsets = []
         for dataset, frac in zip(raw_train_datasets, fracs):
-            train_subset = dataset.select(range(int(frac * len(dataset))))
+            # Lấy mẫu một phần của dataset nếu frac < 1.0
+            num_samples = int(frac * len(dataset))
+            train_subset = dataset.select(range(num_samples))
             train_subsets.append(train_subset)
+        
         if shuffle:
             raw_datasets["train"] = concatenate_datasets(train_subsets).shuffle(seed=42)
         else:
             raw_datasets["train"] = concatenate_datasets(train_subsets)
-    # No subsampling for test datasets to enable fair comparison across models
+    
     if len(raw_val_datasets) > 0:
         if shuffle:
             raw_datasets["test"] = concatenate_datasets(raw_val_datasets).shuffle(seed=42)
@@ -174,7 +174,7 @@ def mix_datasets(dataset_mixer: dict, splits: Optional[List[str]] = None, shuffl
 
     if len(raw_datasets) == 0:
         raise ValueError(
-            f"Dataset {dataset_mixer} not recognized with split {split}. Check the dataset has been correctly formatted."
+            f"No datasets were loaded for the splits '{splits}'. Check your dataset_mixer configuration and paths."
         )
 
     return raw_datasets
