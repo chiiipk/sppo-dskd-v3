@@ -107,10 +107,18 @@ def prepare_score(args):
     train = datasets.load_dataset("parquet", data_files={"train": parquet_path})
     train = pd.DataFrame(train['train'])
 
-    # Lọc ra những dòng có điểm số hợp lệ (không phải là list rỗng hoặc 0)
-    train = train[train['rm_scores'].apply(lambda x: isinstance(x, list) and len(x) > 0)]
+        # --- FIX CHÍNH: Lọc bỏ các hàng có giá trị None ở CẢ HAI cột quan trọng ---
+    original_len = len(train)
+    # Bỏ bất kỳ hàng nào có giá trị None trong cột 'rm_scores' HOẶC 'probability'
+    train.dropna(subset=['rm_scores', 'probability'], inplace=True)
+    
+    # Dòng lọc hiện tại của bạn vẫn rất hữu ích để kiểm tra độ dài
+    train = train[train['rm_scores'].apply(lambda x: len(x) == args.pairs)]
+    
+    print(f"Filtered out {original_len - len(train)} invalid rows. {len(train)} valid rows remaining.")
+    
     if len(train) == 0:
-        print("Error: No valid scores found after filtering. Cannot proceed.")
+        print("Error: No valid data remaining after filtering. Cannot create final dataset.")
         return None
 
     metrics = train['rm_scores'].apply(lambda x: np.array(x[-args.pairs:]))
