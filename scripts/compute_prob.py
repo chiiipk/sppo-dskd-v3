@@ -9,6 +9,7 @@ import os
 def parse_arguments():
     """Parse command line arguments."""
     parser = argparse.ArgumentParser()
+    # Đường dẫn mặc định đã là đường dẫn tuyệt đối, rất tốt.
     parser.add_argument("--output_dir", type=str, default="/kaggle/working/generated/iter1")
     parser.add_argument("--pairs", type=int, default=5)
     parser.add_argument("--prompts", type=str, default="/kaggle/working/data/dolly/train.jsonl")
@@ -37,24 +38,34 @@ def from_ranks(args):
         gpus = range(args.num_gpu)
 
     for data_frac, idx in enumerate(gpus):
-        file_path = os.path.join(args.output_dir, "/ranking/", f"{idx}_{data_frac}.npy")
-        locals = np.load(file_path)
-        locals = list(locals)
-        for lidx, sc in enumerate(locals):
-            scores[data_frac * args.frac_len + lidx] = sc
+        # SỬA LỖI: Bỏ dấu "/" ở đầu "ranking/"
+        file_path = os.path.join(args.output_dir, "ranking", f"{idx}_{data_frac}.npy")
+        try:
+            locals_scores = np.load(file_path)
+            locals_scores = list(locals_scores)
+            for lidx, sc in enumerate(locals_scores):
+                scores[data_frac * args.frac_len + lidx] = sc
+        except FileNotFoundError:
+            print(f"Warning: Ranking file not found at {file_path}. Skipping.")
+            continue
+
 
     probs = []
     rm_scores = []
     for idx, score in enumerate(scores):
-        prb = np.zeros((pairs, pairs))
-        for i in range(pairs):
-            for j in range(pairs):
-                prb[i][j] = 1 / (1 + np.exp(score[j] - score[i]))
-        prb = prb.tolist()
+        if isinstance(score, int): # Bỏ qua nếu điểm số chưa được cập nhật
+            prb = [[0.0] * pairs for _ in range(pairs)]
+        else:
+            prb = np.zeros((pairs, pairs))
+            for i in range(pairs):
+                for j in range(pairs):
+                    prb[i][j] = 1 / (1 + np.exp(score[j] - score[i]))
+            prb = prb.tolist()
         probs.append(prb)
         rm_scores.append(score)
 
-    out_dir = os.path.join(args.output_dir,"/generated")
+    # SỬA LỖI: Bỏ dấu "/" ở đầu "generated"
+    out_dir = os.path.join(args.output_dir, "generated")
     os.makedirs(out_dir, exist_ok=True)
 
     print("Saving probabilities...")
@@ -64,38 +75,56 @@ def from_ranks(args):
     df = data.to_pandas()
     for i in range(pairs):
         resp_file = os.path.join(out_dir, f"responses_{i}.json")
-        with open(resp_file) as f:
-            responses = json.load(f)
-        fmt = [
-            [
-                {"content": data[j]["prompt"], "role": "user"},
-                {"content": responses[j], "role": "assistant"},
+        try:
+            with open(resp_file) as f:
+                responses = json.load(f)
+            
+            if len(responses) != len(data):
+                 print(f"Warning: Mismatch length for responses_{i}.json. Padding with empty strings.")
+                 responses.extend([""] * (len(data) - len(responses)))
+
+            fmt = [
+                [
+                    {"content": data[j]["prompt"], "role": "user"},
+                    {"content": responses[j], "role": "assistant"},
+                ]
+                for j in range(len(data))
             ]
-            for j in range(len(data))
-        ]
-        df[f"generate_{i}"] = fmt
+            df[f"generate_{i}"] = fmt
+        except FileNotFoundError:
+            print(f"Warning: Response file not found at {resp_file}. Creating empty column.")
+            df[f"generate_{i}"] = [[] for _ in range(len(df))]
+
 
     df["probability"] = probs
     df["rm_scores"] = rm_scores
     df.to_parquet(os.path.join(out_dir, "train.parquet"))
 
 def prepare_score(args):
-    # Load dataset
-    train = datasets.load_dataset("parquet", data_files={ "train": os.path.join( args.output_dir, "/generated/", "train.parquet") })
+    # SỬA LỖI: Bỏ dấu "/" ở đầu "generated/"
+    parquet_path = os.path.join(args.output_dir, "generated", "train.parquet")
+    print(f"Loading parquet file from: {parquet_path}")
+    train = datasets.load_dataset("parquet", data_files={"train": parquet_path})
     train = pd.DataFrame(train['train'])
 
-    metrics = train['rm_scores'].apply(lambda x: np.array(x[-5:]))
+    # Lọc ra những dòng có điểm số hợp lệ (không phải là list rỗng hoặc 0)
+    train = train[train['rm_scores'].apply(lambda x: isinstance(x, list) and len(x) > 0)]
+    if len(train) == 0:
+        print("Error: No valid scores found after filtering. Cannot proceed.")
+        return None
+
+    metrics = train['rm_scores'].apply(lambda x: np.array(x[-args.pairs:]))
     metrics_prob = train['probability'].apply(lambda x: np.stack(x).sum(axis=1))
     maxmin = metrics.apply(lambda x: [x.argmax(), x.argmin()])
 
     train_ordered = train[[f"generate_{i}" for i in range(args.pairs)] + ['probability']]
 
-    chosen = [train_ordered.iloc[i, maxmin[i][0]] for i in range(len(train_ordered))]
-    rejected = [train_ordered.iloc[i, maxmin[i][1]] for i in range(len(train_ordered))]
+    chosen = [train_ordered.iloc[i, maxmin.iloc[i][0]] for i in range(len(train_ordered))]
+    rejected = [train_ordered.iloc[i, maxmin.iloc[i][1]] for i in range(len(train_ordered))]
 
-    chosen_probs = [train_ordered['probability'].iloc[i][maxmin[i][0]][maxmin[i][1]] for i in range(len(train_ordered))]
-    chosen_probs_win = [metrics_prob[i][maxmin[i][0]] / len(metrics_prob.iloc[0]) for i in range(len(metrics_prob))]
-    chosen_probs_lose = [metrics_prob[i][maxmin[i][1]] / len(metrics_prob.iloc[0]) for i in range(len(metrics_prob))]
+    chosen_probs = [train_ordered['probability'].iloc[i][maxmin.iloc[i][0]][maxmin.iloc[i][1]] for i in range(len(train_ordered))]
+    chosen_probs_win = [metrics_prob.iloc[i][maxmin.iloc[i][0]] / len(metrics_prob.iloc[0]) for i in range(len(metrics_prob))]
+    chosen_probs_lose = [metrics_prob.iloc[i][maxmin.iloc[i][1]] / len(metrics_prob.iloc[0]) for i in range(len(metrics_prob))]
 
     train_new = pd.DataFrame({
         'chosen': chosen,
@@ -104,9 +133,10 @@ def prepare_score(args):
         'chosen_probs_win': chosen_probs_win,
         'chosen_probs_lose': chosen_probs_lose
     })
-
-    output_dir = '-'.join(args.output_dir.split('-')[1:])
-    OUTPATH = f'/kaggle/working/synthetic_data_{output_dir}_score'
+    
+    # Lấy tên thư mục cuối cùng từ output_dir để đặt tên cho file synthetic
+    output_base_name = os.path.basename(os.path.normpath(args.output_dir))
+    OUTPATH = f'/kaggle/working/synthetic_data_{output_base_name}_score'
     os.makedirs(OUTPATH, exist_ok=True)
 
     train_new.to_parquet(f'{OUTPATH}/train.parquet', index=False)
@@ -119,6 +149,9 @@ def prepare_score(args):
     return OUTPATH
 
 def push_dataset(file_dir, org):
+    if file_dir is None:
+        print("Skipping push_dataset due to previous errors.")
+        return
     data = Dataset.from_parquet(f"{file_dir}/train.parquet")
     try:
         test = Dataset.from_parquet(f"{file_dir}/test.parquet")
@@ -133,7 +166,13 @@ def push_dataset(file_dir, org):
 if __name__ == "__main__":
     args = parse_arguments()
     from_ranks(args)
-    data = Dataset.from_parquet(os.path.join(args.output_dir, "/generated/", "train.parquet"))
-    print(f"Generated data saved locally to /kaggle/working/generated/{args.output_dir}/")
-    out_path = prepare_score(args)
-    push_dataset(out_path, args.org)
+    # SỬA LỖI: Bỏ dấu "/" ở đầu "generated/"
+    generated_parquet_path = os.path.join(args.output_dir, "generated", "train.parquet")
+    if os.path.exists(generated_parquet_path):
+        data = Dataset.from_parquet(generated_parquet_path)
+        # SỬA LỖI: Cải thiện câu thông báo cho rõ ràng hơn
+        print(f"Generated data saved locally to {os.path.dirname(generated_parquet_path)}")
+        out_path = prepare_score(args)
+        push_dataset(out_path, args.org)
+    else:
+        print(f"Error: Parquet file not found at {generated_parquet_path}. Cannot proceed to scoring and pushing dataset.")
