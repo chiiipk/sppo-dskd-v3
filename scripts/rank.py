@@ -17,7 +17,8 @@ def parse_arguments():
     parser.add_argument("--pairs", type=int, default=5)
     parser.add_argument("--data_frac", type=int, default=0)
     parser.add_argument("--frac_len", type=int, default=0)
-    parser.add_argument("--numgpu", type=int, default=0)  # local rank
+    parser.add_argument("--numgpu", type=int, default=8)
+    parser.add_argument("--gpu", type=int, default=0)# local rank
     
 
     # teacher LLM options
