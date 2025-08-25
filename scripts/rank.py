@@ -128,10 +128,17 @@ def ranking(args, prompts, candidates):
         blender.loadranker("llm-blender/PairRM")
         scores = blender.rank(prompts, candidates, return_scores=True, batch_size=1)
 
-    out_dir = f"/kaggle/working/ranking/{args.output_dir}"
+        # --- FIX: SỬA LẠI LOGIC TẠO ĐƯỜNG DẪN OUTPUT ---
+    # Nếu args.output_dir là đường dẫn tuyệt đối (bắt đầu bằng '/'), dùng nó.
+    # Nếu không, coi nó là tên thư mục và nối vào /kaggle/working/.
+    base_output_dir = args.output_dir if args.output_dir.startswith('/') else os.path.join("/kaggle/working", args.output_dir)
+    
+    out_dir = os.path.join(base_output_dir, "ranking")
     os.makedirs(out_dir, exist_ok=True)
-    np.save(f"{out_dir}/{args.gpu}_{args.data_frac}.npy", scores)
-
+    
+    output_path = os.path.join(out_dir, f"{args.gpu}_{args.data_frac}.npy")
+    np.save(output_path, scores)
+    print(f"Successfully saved {len(scores)} rankings to {output_path}")
 
 def main(args):
     # load dataset
@@ -171,13 +178,21 @@ def main(args):
     prompts_all = [apply_template(data[idx]["prompt"], tokenizer) for idx in range(len(data))]
     print("Example prompt:", prompts_all[0])
 
-    # load generated responses
+        # --- FIX: SỬA LẠI LOGIC ĐỌC FILE RESPONSE ---
+    # Áp dụng logic tương tự như trên để xác định thư mục cơ sở
+    base_output_dir = args.output_dir if args.output_dir.startswith('/') else os.path.join("/kaggle/working", args.output_dir)
+
     all_generated = []
     for i in range(args.pairs):
-        file_path = f"/kaggle/working/generated/{args.output_dir}/responses_{i}.json"
-        with open(file_path) as f:
-            gen = json.load(f)
-            all_generated.append(gen)
+        # Nối thư mục 'generated' và tên file vào đường dẫn cơ sở
+        file_path = os.path.join(base_output_dir, "generated", f"responses_{i}.json")
+        try:
+            with open(file_path) as f:
+                gen = json.load(f)
+                all_generated.append(gen)
+        except FileNotFoundError:
+            print(f"ERROR: Response file not found at {file_path}. Cannot proceed with ranking.")
+            return
 
     candidates_texts = list(zip(*all_generated))
     assert len(data) == len(candidates_texts)
