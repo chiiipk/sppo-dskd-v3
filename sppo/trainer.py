@@ -42,14 +42,14 @@ from trl.trainer.utils import (
 )
 
 
-if is_peft_available():
+if is_peft_available:
     from peft import PeftModel, get_peft_model, prepare_model_for_kbit_training
 
 
-if is_wandb_available():
+if is_wandb_available:
     import wandb
 
-if is_deepspeed_available():
+if is_deepspeed_available:
     import deepspeed
 # def add_cols(feature, chosen_probs, chosen_probs_win, chosen_probs_lose):
 #     feature['chosen_probs'] = chosen_probs
