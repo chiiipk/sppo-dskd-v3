@@ -195,11 +195,11 @@ class SPPOTrainer(Trainer):
         # has been called in order to properly call autocast if needed.
         self._peft_has_been_casted_to_bf16 = False
 
-        if not is_peft_available() and peft_config is not None:
+        if not is_peft_available and peft_config is not None:
             raise ValueError(
                 "PEFT is not installed and you passed a `peft_config` in the trainer's kwargs, please install it to use the PEFT models"
             )
-        elif is_peft_available() and peft_config is not None:
+        elif is_peft_available and peft_config is not None:
             raise NotImplementedError
             # # if model is a peft model and we have a peft_config, we merge and unload it first
             # if isinstance(model, PeftModel):
@@ -263,7 +263,7 @@ class SPPOTrainer(Trainer):
         else:
             self.is_encoder_decoder = is_encoder_decoder
 
-        self.is_peft_model = is_peft_available() and isinstance(model, PeftModel)
+        self.is_peft_model = is_peft_available and isinstance(model, PeftModel)
         self.model_adapter_name = model_adapter_name
         self.ref_adapter_name = ref_adapter_name
 
