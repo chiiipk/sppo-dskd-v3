@@ -81,7 +81,7 @@ echo "Using frac_len ${FRAC_LEN}"
 (
     data_frac=0
     for gpu_id in ${AVAILABLE_GPUS[@]}; do
-        CUDA_VISIBLE_DEVICES=$gpu_id python3 /kaggle/working/sppo-dskd-v3/scripts/generate.sh \
+        CUDA_VISIBLE_DEVICES=$gpu_id python3 /kaggle/working/sppo-dskd-v3/scripts/generate.py \
             --model $MODEL --maxlen 256 \
             --output_dir "$OUTDIR/generated" \
             --prompts $PROMPTS \
