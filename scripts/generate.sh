@@ -7,7 +7,7 @@ AVAILABLE_GPUS=(0 1)
 MODEL="mistralai/Mistral-7B-Instruct-v0.2"
 
 # Outdir: để tuyệt đối trong /kaggle/working
-OUTDIR="/kaggle/working/data-mistral-7b-instruct-sppo-iter1"
+OUTDIR="data-mistral-7b-instruct-sppo-iter1"
 
 PAIRS=5
 FRAC=0
