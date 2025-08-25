@@ -107,14 +107,32 @@ def prepare_score(args):
     train = datasets.load_dataset("parquet", data_files={"train": parquet_path})
     train = pd.DataFrame(train['train'])
 
-        # --- FIX CHÍNH: Lọc bỏ các hàng có giá trị None ở CẢ HAI cột quan trọng ---
+    # --- FIX CUỐI CÙNG: Lọc sâu để loại bỏ các giá trị None bên trong list/matrix ---
     original_len = len(train)
-    # Bỏ bất kỳ hàng nào có giá trị None trong cột 'rm_scores' HOẶC 'probability'
-    train.dropna(subset=['rm_scores', 'probability'], inplace=True)
-    
-    # Dòng lọc hiện tại của bạn vẫn rất hữu ích để kiểm tra độ dài
-    train = train[train['rm_scores'].apply(lambda x: len(x) == args.pairs)]
-    
+
+    def is_valid_matrix(matrix, pairs):
+        """Kiểm tra xem một ma trận có hợp lệ không (không None, đúng shape, và không chứa None bên trong)."""
+        if not isinstance(matrix, list) or len(matrix) != pairs:
+            return False
+        for row in matrix:
+            if not isinstance(row, list) or len(row) != pairs:
+                return False
+            if any(x is None for x in row): # Kiểm tra None bên trong từng hàng
+                return False
+        return True
+
+    def is_valid_scores(scores, pairs):
+        """Kiểm tra xem danh sách điểm số có hợp lệ không."""
+        if not isinstance(scores, list) or len(scores) != pairs:
+            return False
+        if any(x is None for x in scores): # Kiểm tra None bên trong danh sách
+            return False
+        return True
+
+    # Áp dụng các hàm lọc mạnh mẽ hơn
+    train = train[train['probability'].apply(lambda x: is_valid_matrix(x, args.pairs))]
+    train = train[train['rm_scores'].apply(lambda x: is_valid_scores(x, args.pairs))]
+
     print(f"Filtered out {original_len - len(train)} invalid rows. {len(train)} valid rows remaining.")
     
     if len(train) == 0:
