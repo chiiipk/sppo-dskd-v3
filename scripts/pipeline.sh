@@ -53,7 +53,13 @@ while [[ "$#" -gt 0 ]]; do
         shift
         ;;
     --dataset)
-        DATASET="$2"
+        if [[ "$2" != /* ]]; then
+            # Nếu tên dataset không có địa chỉ, tự động thêm địa chỉ vào
+            DATASET="/kaggle/working/$2"
+        else
+            # Nếu đã có địa chỉ đầy đủ, giữ nguyên
+            DATASET="$2"
+        fi
         shift
         ;;
     --num)
