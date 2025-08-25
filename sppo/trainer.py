@@ -29,7 +29,11 @@ from transformers import (
 from transformers.trainer_callback import TrainerCallback
 from transformers.trainer_utils import EvalLoopOutput
 
-from trl.import_utils import is_peft_available, is_wandb_available
+# --- FIX: Cập nhật import cho phiên bản TRL mới ---
+import importlib.util
+
+is_peft_available = importlib.util.find_spec("peft") is not None
+is_wandb_available = importlib.util.find_spec("wandb") is not None
 from trl.models import PreTrainedModelWrapper, create_reference_model
 from trl.trainer.utils import (
     DPODataCollatorWithPadding,
