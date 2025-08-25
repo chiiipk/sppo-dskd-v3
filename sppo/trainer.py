@@ -39,7 +39,6 @@ from trl.trainer.utils import (
     DPODataCollatorWithPadding,
     disable_dropout_in_model,
     pad_to_length,
-    trl_sanitze_kwargs_for_tagging,
 )
 
 
