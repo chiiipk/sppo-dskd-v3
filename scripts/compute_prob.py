@@ -37,7 +37,7 @@ def from_ranks(args):
         gpus = range(args.num_gpu)
 
     for data_frac, idx in enumerate(gpus):
-        file_path = os.path.join("/kaggle/working/ranking", args.output_dir, f"{idx}_{data_frac}.npy")
+        file_path = os.path.join(args.output_dir, "/ranking/", f"{idx}_{data_frac}.npy")
         locals = np.load(file_path)
         locals = list(locals)
         for lidx, sc in enumerate(locals):
@@ -54,7 +54,7 @@ def from_ranks(args):
         probs.append(prb)
         rm_scores.append(score)
 
-    out_dir = os.path.join("/kaggle/working/generated", args.output_dir)
+    out_dir = os.path.join(args.output_dir,"/generated")
     os.makedirs(out_dir, exist_ok=True)
 
     print("Saving probabilities...")
@@ -81,7 +81,7 @@ def from_ranks(args):
 
 def prepare_score(args):
     # Load dataset
-    train = datasets.load_dataset("parquet", data_files={ "train": os.path.join("/kaggle/working/generated", args.output_dir, "train.parquet") })
+    train = datasets.load_dataset("parquet", data_files={ "train": os.path.join( args.output_dir, "/generated/", "train.parquet") })
     train = pd.DataFrame(train['train'])
 
     metrics = train['rm_scores'].apply(lambda x: np.array(x[-5:]))
@@ -133,7 +133,7 @@ def push_dataset(file_dir, org):
 if __name__ == "__main__":
     args = parse_arguments()
     from_ranks(args)
-    data = Dataset.from_parquet(os.path.join("/kaggle/working/generated", args.output_dir, "train.parquet"))
+    data = Dataset.from_parquet(os.path.join(args.output_dir, "/generated/", "train.parquet"))
     print(f"Generated data saved locally to /kaggle/working/generated/{args.output_dir}/")
     out_path = prepare_score(args)
     push_dataset(out_path, args.org)
