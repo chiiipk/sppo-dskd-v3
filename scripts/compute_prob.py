@@ -16,13 +16,8 @@ def parse_arguments():
     parser.add_argument("--frac_len", type=int, default=0)
     parser.add_argument("--num_gpu", type=int, default=2)
     parser.add_argument("--gpu_ids", type=str, default=None)
-    parser.add_argument("--ranking_root", type=str, default=None)
-    if args.ranking_root is None:
-        ranking_dir = os.path.join(args.output_dir, "ranking")
-    else:
-        ranking_dir = args.ranking_root
-      # where ranking npy are stored
-        parser.add_argument("--org", type=str, default="local")
+    parser.add_argument("--ranking_root", type=str, default=None)  # optional: explicit ranking root
+    parser.add_argument("--org", type=str, default="local")
     return parser.parse_args()
 
 def load_prompts(prompts_path):
@@ -39,15 +34,18 @@ def from_ranks(args):
     n = len(data)
     print(f"Loaded {n} prompts from {args.prompts}")
 
-    # prepare where to read ranking npy files
-    base_name = os.path.basename(os.path.normpath(args.output_dir))
-    ranking_dir = os.path.join(args.ranking_root, base_name)
+    # determine ranking directory:
+    # if user passed --ranking_root, use it; otherwise expect ranking under args.output_dir/ranking
+    if args.ranking_root:
+        ranking_dir = args.ranking_root
+    else:
+        ranking_dir = os.path.join(args.output_dir, "ranking")
     print("Looking for ranking files under:", ranking_dir)
 
-    # determine GPUs list
+    # determine GPU ids list
     if args.gpu_ids:
         gpus = args.gpu_ids.strip("()").split(',')
-        gpus = [g.strip() for g in gpus if g.strip()!='']
+        gpus = [g.strip() for g in gpus if g.strip() != ""]
     else:
         gpus = [str(i) for i in range(args.num_gpu)]
 
@@ -58,6 +56,7 @@ def from_ranks(args):
     for data_frac_idx, gpu_id in enumerate(gpus):
         fn = os.path.join(ranking_dir, f"{gpu_id}_{data_frac_idx}.npy")
         if not os.path.exists(fn):
+            # try alternative naming (some pipelines may save like '0_0.npy' inside output_dir/ranking or just '0_0.npy' at ranking_dir)
             print(f"Warning: ranking file not found: {fn} (skipping)")
             continue
         arr = np.load(fn, allow_pickle=True)
@@ -78,7 +77,6 @@ def from_ranks(args):
         else:
             # ensure length pairs
             if len(scores[i]) != args.pairs:
-                # try to pad or truncate
                 arr = list(scores[i])
                 if len(arr) < args.pairs:
                     arr = arr + [0.0] * (args.pairs - len(arr))
@@ -90,26 +88,35 @@ def from_ranks(args):
     probs = []
     for sc in scores:
         sc_arr = np.array(sc, dtype=float)
-        # compute pairwise win prob: sigmoid(score_i - score_j)
         prb = np.zeros((args.pairs, args.pairs), dtype=float)
         for i in range(args.pairs):
             for j in range(args.pairs):
                 prb[i, j] = 1.0 / (1.0 + np.exp(sc_arr[j] - sc_arr[i]))
         probs.append(prb.tolist())
 
-    # responses (combined) are expected in args.output_dir as responses_0.json ... responses_{pairs-1}.json
+    # responses (combined) might be in args.output_dir/generated/responses_*.json or args.output_dir/responses_*.json
     responses = []
     for p in range(args.pairs):
-        resp_file = os.path.join(args.output_dir, f"responses_{p}.json")
-        if not os.path.exists(resp_file):
-            print(f"Warning: response file missing: {resp_file}. Will fill with empty strings.")
+        # check typical locations
+        candidates = [
+            os.path.join(args.output_dir, "generated", f"responses_{p}.json"),
+            os.path.join(args.output_dir, f"responses_{p}.json"),
+            os.path.join(args.output_dir, "generated", f"responses_{args.data_frac}_{p}.json"),
+            os.path.join(args.output_dir, f"responses_{args.data_frac}_{p}.json")
+        ]
+        found = None
+        for c in candidates:
+            if os.path.exists(c):
+                found = c
+                break
+        if found is None:
+            print(f"Warning: response file for p={p} not found in expected locations. Will fill with empty strings.")
             responses.append([""] * n)
             continue
-        with open(resp_file, 'r', encoding='utf-8') as f:
+        with open(found, 'r', encoding='utf-8') as f:
             arr = json.load(f)
-        # if combined file is responses_{p}.json with length n -> good, else pad/truncate
         if len(arr) != n:
-            print(f"Warning: responses_{p}.json length {len(arr)} != n {n}. Padding/truncating.")
+            print(f"Warning: {found} length {len(arr)} != n {n}. Padding/truncating.")
             if len(arr) < n:
                 arr = arr + [""] * (n - len(arr))
             else:
@@ -119,7 +126,6 @@ def from_ranks(args):
     # build dataframe like your parquet (generate_0.. generate_{pairs-1}, probability, rm_scores)
     df = pd.DataFrame()
     for p in range(args.pairs):
-        # create conversation struct: [ {"content": prompt, "role":"user"}, {"content": response, "role":"assistant"} ]
         convs = []
         for i in range(n):
             prompt_text = data[i]["prompt"] if "prompt" in data[i] else ""
@@ -132,9 +138,10 @@ def from_ranks(args):
     df["probability"] = probs
     df["rm_scores"] = scores
 
-    # save parquet under the OUT directory itself to match later steps
-    os.makedirs(args.output_dir, exist_ok=True)
-    parquet_path = os.path.join(args.output_dir, "train.parquet")
+    # Save parquet under args.output_dir/generated/train.parquet (keeps consistency)
+    generated_dir = os.path.join(args.output_dir, "generated")
+    os.makedirs(generated_dir, exist_ok=True)
+    parquet_path = os.path.join(generated_dir, "train.parquet")
     df.to_parquet(parquet_path, index=False)
     print("Saved combined parquet to:", parquet_path)
     return parquet_path
@@ -177,11 +184,9 @@ def prepare_score_from_parquet(parquet_path, args):
     def extract_assistant(conv):
         if not isinstance(conv, list) or len(conv) == 0:
             return ""
-        # find last dict with role 'assistant', fallback to last element
         for item in reversed(conv):
             if isinstance(item, dict) and item.get('role','') == 'assistant':
                 return item.get('content','')
-        # fallback
         last = conv[-1]
         return last.get('content','') if isinstance(last, dict) else str(last)
 
@@ -193,7 +198,6 @@ def prepare_score_from_parquet(parquet_path, args):
         gen_r = df_valid.loc[i, f"generate_{ri}"] if f"generate_{ri}" in df_valid.columns else []
         chosen_txt = extract_assistant(gen_c)
         rejected_txt = extract_assistant(gen_r)
-        # prompt: take from the user role of chosen conv if possible
         prompt_txt = ""
         if isinstance(gen_c, list) and len(gen_c) > 0 and isinstance(gen_c[0], dict):
             prompt_txt = gen_c[0].get('content','')
@@ -207,7 +211,8 @@ def prepare_score_from_parquet(parquet_path, args):
         "rejected": rejected_out
     })
 
-    base = os.path.basename(os.path.normpath(os.path.dirname(parquet_path)))  # take parent folder name
+    # base from args.output_dir to create synthetic folder name
+    base = os.path.basename(os.path.normpath(args.output_dir))
     outdir = f"/kaggle/working/synthetic_data_{base}_score"
     os.makedirs(outdir, exist_ok=True)
     train_new.to_parquet(os.path.join(outdir, "train.parquet"), index=False)
@@ -218,6 +223,6 @@ def prepare_score_from_parquet(parquet_path, args):
 
 if __name__ == "__main__":
     args = parse_arguments()
-    parquet_path = from_ranks(args)           # produces OUT/train.parquet
+    parquet_path = from_ranks(args)           # produces OUT/generated/train.parquet
     out_dir = prepare_score_from_parquet(parquet_path, args)
     print("Done. synthetic dataset:", out_dir)
