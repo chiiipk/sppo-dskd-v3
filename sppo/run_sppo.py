@@ -45,7 +45,38 @@ def setup_logging(log_level):
     transformers.utils.logging.set_verbosity(log_level)
     transformers.utils.logging.enable_default_handler()
     transformers.utils.logging.enable_explicit_format()
+def preprocess_function(feature, tokenizer, max_length, max_prompt_length):
+    """
+    Hàm này áp dụng template và token hóa cho một hàng dữ liệu.
+    Nó trả về một dictionary chứa các tensor đã được token hóa.
+    """
+    # 1. Áp dụng template để tạo chuỗi văn bản hoàn chỉnh
+    prompt_messages = [{"role": "user", "content": feature["prompt"]}]
+    chosen_messages = feature["chosen"] # Dữ liệu đã là một list of dicts
+    rejected_messages = feature["rejected"] # Dữ liệu đã là một list of dicts
 
+    prompt_str = tokenizer.apply_chat_template(prompt_messages, tokenize=False, add_generation_prompt=True)
+    chosen_str = tokenizer.apply_chat_template(chosen_messages, tokenize=False)
+    rejected_str = tokenizer.apply_chat_template(rejected_messages, tokenize=False)
+    
+    # 2. Token hóa các chuỗi đã định dạng
+    tokenized_prompt = tokenizer(prompt_str, truncation=True, max_length=max_prompt_length)
+    tokenized_chosen = tokenizer(chosen_str, truncation=True, max_length=max_length)
+    tokenized_rejected = tokenizer(rejected_str, truncation=True, max_length=max_length)
+
+    # 3. Tạo dictionary kết quả
+    result = {
+        "prompt_input_ids": tokenized_prompt["input_ids"],
+        "prompt_attention_mask": tokenized_prompt["attention_mask"],
+        "chosen_input_ids": tokenized_chosen["input_ids"],
+        "chosen_attention_mask": tokenized_chosen["attention_mask"],
+        "chosen_labels": tokenized_chosen["input_ids"][:], # Sao chép input_ids sang labels
+        "rejected_input_ids": tokenized_rejected["input_ids"],
+        "rejected_attention_mask": tokenized_rejected["attention_mask"],
+        "rejected_labels": tokenized_rejected["input_ids"][:] # Sao chép input_ids sang labels
+    }
+    return result
+    
 def load_and_process_datasets(data_args, training_args, tokenizer):
     # 1. Tải dữ liệu gốc
     raw_datasets = get_datasets(data_args, splits=["train"])
@@ -53,50 +84,23 @@ def load_and_process_datasets(data_args, training_args, tokenizer):
         f"Training on the following splits: {[split + ' : ' + str(dset.num_rows) for split, dset in raw_datasets.items()]}"
     )
     
-    # 2. Đổi tên cột cho nhất quán (thực hiện trước để dễ xử lý)
-    column_names = list(raw_datasets["train"].features)
-    # 3. Định nghĩa hàm token hóa và áp dụng template
-    def tokenize_row(feature, tokenizer):
-        # Dữ liệu trong các cột 'chosen' và 'rejected' đã có định dạng 'messages' sẵn rồi.
-        # Chúng ta chỉ cần sử dụng trực tiếp chúng.
-        # Cột 'prompt' chỉ chứa văn bản thô của lượt user.
-        
-        # Lấy trực tiếp danh sách messages từ các cột tương ứng
-        # Không cần phải xây dựng lại bất cứ thứ gì
-        chosen_messages = feature["chosen"]
-        rejected_messages = feature["rejected"]
-        
-        # Lỗi tiềm ẩn: `apply_chat_template` có thể cần một prompt riêng.
-        # Để an toàn, chúng ta sẽ chỉ lấy prompt từ lượt đầu tiên.
-        prompt_messages = [{"role": "user", "content": feature["prompt"]}]
-        
-        # Áp dụng template để có được chuỗi văn bản hoàn chỉnh
-        # Lưu ý: Chúng ta không cần thêm prompt_messages nữa vì nó đã có trong chosen_messages và rejected_messages rồi.
-        
-        # Áp dụng template cho toàn bộ cuộc hội thoại
-        feature["chosen"] = tokenizer.apply_chat_template(chosen_messages, tokenize=False)
-        feature["rejected"] = tokenizer.apply_chat_template(rejected_messages, tokenize=False)
-        
-        # Xử lý riêng cho cột prompt để dùng cho max_prompt_length
-        # add_generation_prompt=True để thêm token báo hiệu cho model bắt đầu trả lời
-        feature["prompt"] = tokenizer.apply_chat_template(prompt_messages, tokenize=False, add_generation_prompt=True)
-        
-        return feature
-
-    # 4. Áp dụng hàm xử lý lên toàn bộ dataset
-    # Lấy tên cột mới sau khi đã đổi tên
-    new_column_names = list(raw_datasets["train"].features)
+    # 2. Lấy tên các cột gốc để xóa chúng đi sau khi xử lý xong
+    original_column_names = list(raw_datasets["train"].features)
     
-    processed_datasets = raw_datasets.map(
-        tokenize_row,
-        fn_kwargs={"tokenizer": tokenizer},
+    # 3. Áp dụng hàm preprocess_function lên toàn bộ dataset
+    tokenized_datasets = raw_datasets.map(
+        preprocess_function,
+        fn_kwargs={
+            "tokenizer": tokenizer,
+            "max_length": training_args.max_length,
+            "max_prompt_length": training_args.max_prompt_length,
+        },
         num_proc=data_args.preprocessing_num_workers,
-        # Không xóa cột nào ở đây cả, vì chúng ta đã có tên cột đúng
-        # remove_columns=new_column_names, 
-        desc="Formatting comparisons with prompt template",
+        remove_columns=original_column_names, # Xóa tất cả các cột cũ
+        desc="Tokenizing and formatting comparisons",
     )
     
-    return processed_datasets
+    return tokenized_datasets
 
 def setup_model(model_args, training_args):
     torch_dtype = (
@@ -221,7 +225,7 @@ def main_inner(model_args, data_args, training_args):
 
     data_args.truncation_side = "left"
     tokenizer = get_tokenizer(model_args, data_args)
-    raw_datasets = load_and_process_datasets(data_args, training_args, tokenizer)
+    tokenized_datasets = load_and_process_datasets(data_args, training_args, tokenizer)
 
     model, ref_model, model_kwargs, ref_model_kwargs = setup_model(model_args, training_args)
 
@@ -232,7 +236,7 @@ def main_inner(model_args, data_args, training_args):
         ref_model_init_kwargs=ref_model_kwargs,
         args=training_args,
         beta=training_args.beta,
-        train_dataset=raw_datasets["train"],
+        train_dataset=tokenized_datasets["train"],
         tokenizer=tokenizer,
         max_length=training_args.max_length,
         max_prompt_length=training_args.max_prompt_length,
@@ -240,7 +244,7 @@ def main_inner(model_args, data_args, training_args):
         loss_type=training_args.loss_type,
     )
 
-    train_and_evaluate(trainer, raw_datasets, training_args)
+    train_and_evaluate(trainer, tokenized_datasets, training_args)
     save_model_and_results(trainer, training_args, model_args, data_args)
 
 if __name__ == "__main__":
