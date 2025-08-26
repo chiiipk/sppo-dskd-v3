@@ -93,12 +93,9 @@ def prepare_score_from_parquet(parquet_path, args):
     chosen_idx = np.argmax(metrics, axis=1)
     rejected_idx = np.argmin(metrics, axis=1)
 
-    def extract_assistant_text(conv):
-        if isinstance(conv, list) and len(conv) > 1: return conv[1].get('content', '')
-        return ''
-
-    chosen_text = [extract_assistant_text(df.iloc[i][f"generate_{chosen_idx[i]}"]) for i in range(len(df))]
-    rejected_text = [extract_assistant_text(df.iloc[i][f"generate_{rejected_idx[i]}"]) for i in range(len(df))]
+    # Trích xuất trực tiếp vì bây giờ cột chỉ chứa chuỗi văn bản
+    chosen_text = [df.iloc[i][f"generate_{chosen_idx[i]}"] for i in range(len(df))]
+    rejected_text = [df.iloc[i][f"generate_{rejected_idx[i]}"] for i in range(len(df))]
 
     train_new = pd.DataFrame({
         "text_prompt": df["prompt"].tolist(),
