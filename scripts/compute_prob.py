@@ -142,23 +142,51 @@ def prepare_score(args):
     metrics = train['rm_scores'].apply(lambda x: np.array(x[-args.pairs:]))
     metrics_prob = train['probability'].apply(lambda x: np.stack(x).sum(axis=1))
     maxmin = metrics.apply(lambda x: [x.argmax(), x.argmin()])
+    def flatten_conversation(conv_list):
+            """Extracts the assistant's response text from a conversation struct."""
+            if not isinstance(conv_list, list) or len(conv_list) < 2: return ""
+            # Trả về nội dung của tin nhắn cuối cùng (của assistant)
+            return conv_list[-1].get('content', '')
+    
+    chosen_text, rejected_text, prompt_text = [], [], []
+    for i in range(len(train)):
+        idx_pair = maxmin_indices.iloc[i]
+        
+        chosen_conversation = train[f"generate_{idx_pair[0]}"].iloc[i]
+        rejected_conversation = train[f"generate_{idx_pair[1]}"].iloc[i]
+        
+        # Áp dụng hàm làm phẳng để lấy văn bản thuần túy
+        chosen_text.append(flatten_conversation(chosen_conversation))
+        rejected_text.append(flatten_conversation(rejected_conversation))
+        # Trích xuất prompt từ một trong các hội thoại
+        if isinstance(chosen_conversation, list) and len(chosen_conversation) > 0:
+            prompt_text.append(chosen_conversation[0].get('content', ''))
+        else:
+            prompt_text.append('') # Thêm prompt rỗng nếu có lỗi
 
-    train_ordered = train[[f"generate_{i}" for i in range(args.pairs)] + ['probability']]
-
-    chosen = [train_ordered.iloc[i, maxmin.iloc[i][0]] for i in range(len(train_ordered))]
-    rejected = [train_ordered.iloc[i, maxmin.iloc[i][1]] for i in range(len(train_ordered))]
-
-    chosen_probs = [train_ordered['probability'].iloc[i][maxmin.iloc[i][0]][maxmin.iloc[i][1]] for i in range(len(train_ordered))]
-    chosen_probs_win = [metrics_prob.iloc[i][maxmin.iloc[i][0]] / len(metrics_prob.iloc[0]) for i in range(len(metrics_prob))]
-    chosen_probs_lose = [metrics_prob.iloc[i][maxmin.iloc[i][1]] / len(metrics_prob.iloc[0]) for i in range(len(metrics_prob))]
-
+    # Tạo DataFrame cuối cùng với các cột VĂN BẢN
     train_new = pd.DataFrame({
-        'chosen': chosen,
-        'rejected': rejected,
-        'chosen_probs': chosen_probs,
-        'chosen_probs_win': chosen_probs_win,
-        'chosen_probs_lose': chosen_probs_lose
+        'prompt': prompt_text,
+        'chosen': chosen_text, 
+        'rejected': rejected_text
     })
+
+    # train_ordered = train[[f"generate_{i}" for i in range(args.pairs)] + ['probability']]
+
+    # chosen = [train_ordered.iloc[i, maxmin.iloc[i][0]] for i in range(len(train_ordered))]
+    # rejected = [train_ordered.iloc[i, maxmin.iloc[i][1]] for i in range(len(train_ordered))]
+
+    # chosen_probs = [train_ordered['probability'].iloc[i][maxmin.iloc[i][0]][maxmin.iloc[i][1]] for i in range(len(train_ordered))]
+    # chosen_probs_win = [metrics_prob.iloc[i][maxmin.iloc[i][0]] / len(metrics_prob.iloc[0]) for i in range(len(metrics_prob))]
+    # chosen_probs_lose = [metrics_prob.iloc[i][maxmin.iloc[i][1]] / len(metrics_prob.iloc[0]) for i in range(len(metrics_prob))]
+
+    # train_new = pd.DataFrame({
+    #     'chosen': chosen,
+    #     'rejected': rejected,
+    #     'chosen_probs': chosen_probs,
+    #     'chosen_probs_win': chosen_probs_win,
+    #     'chosen_probs_lose': chosen_probs_lose
+    # })
 
     # Lấy tên thư mục cuối cùng từ output_dir để đặt tên cho file synthetic
     output_base_name = os.path.basename(os.path.normpath(args.output_dir))
