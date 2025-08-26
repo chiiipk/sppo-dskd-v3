@@ -46,28 +46,44 @@ def setup_logging(log_level):
     transformers.utils.logging.enable_default_handler()
     transformers.utils.logging.enable_explicit_format()
 
-def load_and_process_datasets(data_args, tokenizer):
+def load_and_process_datasets(data_args, training_args, tokenizer):
+    # 1. Tải dữ liệu gốc
     raw_datasets = get_datasets(data_args, splits=["train"])
     logger.info(
         f"Training on the following splits: {[split + ' : ' + str(dset.num_rows) for split, dset in raw_datasets.items()]}"
     )
+    
+    # 2. Đổi tên cột cho nhất quán (thực hiện trước để dễ xử lý)
     column_names = list(raw_datasets["train"].features)
-    column_names = [x for x in column_names if x not in ['chosen_probs', 'chosen_probs_win', 'chosen_probs_lose']]
+    # 3. Định nghĩa hàm token hóa và áp dụng template
+    def tokenize_row(feature, tokenizer):
+        # Áp dụng template cho từng phần
+        prompt_messages = [{"role": "user", "content": feature["prompt"]}]
+        chosen_messages = prompt_messages + [{"role": "assistant", "content": feature["chosen"]}]
+        rejected_messages = prompt_messages + [{"role": "assistant", "content": feature["rejected"]}]
 
-    raw_datasets = raw_datasets.map(
-        apply_chat_template,
-        fn_kwargs={"tokenizer": tokenizer, "skip_system_message": True},
+        # Áp dụng template để có được chuỗi văn bản hoàn chỉnh
+        # Chúng ta không token hóa ở đây, SPPOTrainer sẽ làm điều đó
+        feature["prompt"] = tokenizer.apply_chat_template(prompt_messages, tokenize=False, add_generation_prompt=True)
+        feature["chosen"] = tokenizer.apply_chat_template(chosen_messages, tokenize=False)
+        feature["rejected"] = tokenizer.apply_chat_template(rejected_messages, tokenize=False)
+        
+        return feature
+
+    # 4. Áp dụng hàm xử lý lên toàn bộ dataset
+    # Lấy tên cột mới sau khi đã đổi tên
+    new_column_names = list(raw_datasets["train"].features)
+    
+    processed_datasets = raw_datasets.map(
+        tokenize_row,
+        fn_kwargs={"tokenizer": tokenizer},
         num_proc=data_args.preprocessing_num_workers,
-        remove_columns=column_names,
+        # Không xóa cột nào ở đây cả, vì chúng ta đã có tên cột đúng
+        # remove_columns=new_column_names, 
         desc="Formatting comparisons with prompt template",
     )
-
-    for split in ["train"]:
-        raw_datasets[split] = raw_datasets[split].rename_columns(
-            {"text_prompt": "prompt", "text_chosen": "chosen", "text_rejected": "rejected"}
-        )
-
-    return raw_datasets
+    
+    return processed_datasets
 
 def setup_model(model_args, training_args):
     torch_dtype = (
@@ -192,7 +208,7 @@ def main_inner(model_args, data_args, training_args):
 
     data_args.truncation_side = "left"
     tokenizer = get_tokenizer(model_args, data_args)
-    raw_datasets = load_and_process_datasets(data_args, tokenizer)
+    raw_datasets = load_and_process_datasets(data_args, training_args, tokenizer)
 
     model, ref_model, model_kwargs, ref_model_kwargs = setup_model(model_args, training_args)
 
