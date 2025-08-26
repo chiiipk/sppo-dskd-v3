@@ -134,32 +134,24 @@ def ranking(args, prompts, candidates):
                 print("------------------------------------")
 
     else:
-        import llm_blender
-        blender = llm_blender.Blender()
-        blender.loadranker("llm-blender/PairRM")
-        scores = blender.rank(prompts, candidates, return_scores=True, batch_size=1)
-        # Trong file rank.py, bên trong hàm ranking()
-
-        # ... (sau khi đã tính xong biến `scores`)
-        
-        # --- THÊM ĐOẠN CODE DEBUG NÀY ---
-        if np.isnan(scores).any():
-            print("!!! CẢNH BÁO: Đã phát hiện giá trị NaN trong điểm số !!!")
-            problematic_indices = np.where(np.isnan(scores).any(axis=1))[0]
-            for idx in problematic_indices:
-                print(f"--- Lỗi tại prompt index: {idx} ---")
-                print(f"Prompt: {prompts[idx][:200]}...") # In 200 ký tự đầu của prompt
-                print(f"Candidates: {candidates[idx]}") # In các response
-                print(f"Scores tính ra: {scores[idx]}") # In mảng điểm số chứa NaN
-                print("------------------------------------")
-        # --- KẾT THÚC ĐOẠN CODE DEBUG ---
-
-# Dòng code lưu file gốc
-out_dir = os.path.join(base_output_dir, "ranking")
-os.makedirs(out_dir, exist_ok=True)
-output_path = os.path.join(out_dir, f"{args.gpu}_{args.data_frac}.npy")
-np.save(output_path, scores)
-
+            import llm_blender
+            blender = llm_blender.Blender()
+            blender.loadranker("llm-blender/PairRM")
+            scores = blender.rank(prompts, candidates, return_scores=True, batch_size=1)
+            # Trong file rank.py, bên trong hàm ranking()
+    
+            # ... (sau khi đã tính xong biến `scores`)
+            
+            # --- THÊM ĐOẠN CODE DEBUG NÀY ---
+            if np.isnan(scores).any():
+                print("!!! CẢNH BÁO: Đã phát hiện giá trị NaN trong điểm số !!!")
+                problematic_indices = np.where(np.isnan(scores).any(axis=1))[0]
+                for idx in problematic_indices:
+                    print(f"--- Lỗi tại prompt index: {idx} ---")
+                    print(f"Prompt: {prompts[idx][:200]}...") # In 200 ký tự đầu của prompt
+                    print(f"Candidates: {candidates[idx]}") # In các response
+                    print(f"Scores tính ra: {scores[idx]}") # In mảng điểm số chứa NaN
+                    print("------------------------------------")
         # --- FIX: SỬA LẠI LOGIC TẠO ĐƯỜNG DẪN OUTPUT ---
     # Nếu args.output_dir là đường dẫn tuyệt đối (bắt đầu bằng '/'), dùng nó.
     # Nếu không, coi nó là tên thư mục và nối vào /kaggle/working/.
@@ -167,7 +159,7 @@ np.save(output_path, scores)
     
     out_dir = os.path.join(base_output_dir, "ranking")
     os.makedirs(out_dir, exist_ok=True)
-    
+    scores = np.nan_to_num(scores, nan=0.0, posinf=0.0, neginf=0.0)
     output_path = os.path.join(out_dir, f"{args.gpu}_{args.data_frac}.npy")
     np.save(output_path, scores)
     print(f"Successfully saved {len(scores)} rankings to {output_path}")
