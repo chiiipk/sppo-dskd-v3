@@ -108,7 +108,7 @@ def ranking(args, prompts, candidates):
             scoring_prompts = []
             for response in responses:
                 scoring_prompts.append(
-                    f"Rate the following response to the prompt on a scale 1–10.\n\nPrompt: {prompt}\n\nResponse: {response}\n\nScore:"
+                    f"You are an impartial AI judge. Evaluate the following response to a user's prompt. First, provide a step-by-step critique of the response, considering its helpfulness, accuracy, and clarity. Finally, on a new line, provide a single integer score from 1 to 10, where 1 is very poor and 10 is excellent.\n\nPrompt: {prompt}\n\nResponse: {response}\n\nScore:"
                 )
 
             outputs = llm.generate(scoring_prompts, SamplingParams(temperature=0.1, max_tokens=10))
