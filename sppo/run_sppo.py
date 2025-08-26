@@ -57,16 +57,29 @@ def load_and_process_datasets(data_args, training_args, tokenizer):
     column_names = list(raw_datasets["train"].features)
     # 3. Định nghĩa hàm token hóa và áp dụng template
     def tokenize_row(feature, tokenizer):
-        # Áp dụng template cho từng phần
+        # Dữ liệu trong các cột 'chosen' và 'rejected' đã có định dạng 'messages' sẵn rồi.
+        # Chúng ta chỉ cần sử dụng trực tiếp chúng.
+        # Cột 'prompt' chỉ chứa văn bản thô của lượt user.
+        
+        # Lấy trực tiếp danh sách messages từ các cột tương ứng
+        # Không cần phải xây dựng lại bất cứ thứ gì
+        chosen_messages = feature["chosen"]
+        rejected_messages = feature["rejected"]
+        
+        # Lỗi tiềm ẩn: `apply_chat_template` có thể cần một prompt riêng.
+        # Để an toàn, chúng ta sẽ chỉ lấy prompt từ lượt đầu tiên.
         prompt_messages = [{"role": "user", "content": feature["prompt"]}]
-        chosen_messages = prompt_messages + [{"role": "assistant", "content": feature["chosen"]}]
-        rejected_messages = prompt_messages + [{"role": "assistant", "content": feature["rejected"]}]
-
+        
         # Áp dụng template để có được chuỗi văn bản hoàn chỉnh
-        # Chúng ta không token hóa ở đây, SPPOTrainer sẽ làm điều đó
-        feature["prompt"] = tokenizer.apply_chat_template(prompt_messages, tokenize=False, add_generation_prompt=True)
+        # Lưu ý: Chúng ta không cần thêm prompt_messages nữa vì nó đã có trong chosen_messages và rejected_messages rồi.
+        
+        # Áp dụng template cho toàn bộ cuộc hội thoại
         feature["chosen"] = tokenizer.apply_chat_template(chosen_messages, tokenize=False)
         feature["rejected"] = tokenizer.apply_chat_template(rejected_messages, tokenize=False)
+        
+        # Xử lý riêng cho cột prompt để dùng cho max_prompt_length
+        # add_generation_prompt=True để thêm token báo hiệu cho model bắt đầu trả lời
+        feature["prompt"] = tokenizer.apply_chat_template(prompt_messages, tokenize=False, add_generation_prompt=True)
         
         return feature
 
