@@ -16,6 +16,7 @@ def parse_arguments():
     parser.add_argument("--frac_len", type=int, default=0)
     parser.add_argument("--num_gpu", type=int, default=2)
     parser.add_argument("--gpu_ids", type=str, default=None)
+    parser.add_argument("--data_frac", type=int, default=0)       # <-- ADDED: data_frac used when filenames include it
     parser.add_argument("--ranking_root", type=str, default=None)  # optional: explicit ranking root
     parser.add_argument("--org", type=str, default="local")
     return parser.parse_args()
@@ -41,6 +42,7 @@ def from_ranks(args):
     else:
         ranking_dir = os.path.join(args.output_dir, "ranking")
     print("Looking for ranking files under:", ranking_dir)
+    print("Using data_frac:", args.data_frac)
 
     # determine GPU ids list
     if args.gpu_ids:
@@ -48,6 +50,7 @@ def from_ranks(args):
         gpus = [g.strip() for g in gpus if g.strip() != ""]
     else:
         gpus = [str(i) for i in range(args.num_gpu)]
+    print("GPU ids:", gpus)
 
     # init scores placeholder (each entry should be a list of length pairs after fill)
     scores = [None] * n
@@ -56,7 +59,6 @@ def from_ranks(args):
     for data_frac_idx, gpu_id in enumerate(gpus):
         fn = os.path.join(ranking_dir, f"{gpu_id}_{data_frac_idx}.npy")
         if not os.path.exists(fn):
-            # try alternative naming (some pipelines may save like '0_0.npy' inside output_dir/ranking or just '0_0.npy' at ranking_dir)
             print(f"Warning: ranking file not found: {fn} (skipping)")
             continue
         arr = np.load(fn, allow_pickle=True)
@@ -218,11 +220,4 @@ def prepare_score_from_parquet(parquet_path, args):
     train_new.to_parquet(os.path.join(outdir, "train.parquet"), index=False)
     test = train_new.sample(n=min(500, len(train_new)))
     test.to_parquet(os.path.join(outdir, "test.parquet"), index=False)
-    print("Saved synthetic dataset to:", outdir)
-    return outdir
-
-if __name__ == "__main__":
-    args = parse_arguments()
-    parquet_path = from_ranks(args)           # produces OUT/generated/train.parquet
-    out_dir = prepare_score_from_parquet(parquet_path, args)
-    print("Done. synthetic dataset:", out_dir)
+    print("Saved
