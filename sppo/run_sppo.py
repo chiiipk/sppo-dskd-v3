@@ -88,7 +88,7 @@ def load_and_process_datasets(data_args, training_args, tokenizer):
     original_column_names = list(raw_datasets["train"].features)
     
     # 3. Áp dụng hàm preprocess_function lên toàn bộ dataset
-    tokenized_datasets = raw_datasets.map(
+    raw_datasets = raw_datasets.map(
         preprocess_function,
         fn_kwargs={
             "tokenizer": tokenizer,
@@ -100,7 +100,7 @@ def load_and_process_datasets(data_args, training_args, tokenizer):
         desc="Tokenizing and formatting comparisons",
     )
     
-    return tokenized_datasets
+    return raw_datasets
 
 def setup_model(model_args, training_args):
     torch_dtype = (
