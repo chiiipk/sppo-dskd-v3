@@ -28,6 +28,11 @@ from alignment import (
 
 from peft import PeftConfig, PeftModel
 from trainer import SPPOTrainer
+from trl.trainer.utils import (
+    DPODataCollatorWithPadding,
+    disable_dropout_in_model,
+    pad_to_length,
+)
 
 logger = logging.getLogger(__name__)
 
