@@ -101,9 +101,9 @@ def prepare_score_from_parquet(parquet_path, args):
     rejected_text = [extract_assistant_text(df.iloc[i][f"generate_{rejected_idx[i]}"]) for i in range(len(df))]
 
     train_new = pd.DataFrame({
-        "text_prompt": df["prompt"].tolist(),
-        "text_chosen": chosen_text,
-        "text_rejected": rejected_text
+        "prompt": df["prompt"].tolist(),
+        "chosen": chosen_text,
+        "rejected": rejected_text
     })
 
     base = os.path.basename(os.path.normpath(args.output_dir))
