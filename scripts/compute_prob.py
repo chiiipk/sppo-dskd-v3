@@ -74,7 +74,16 @@ def prepare_score_from_parquet(parquet_path, args):
     original_len = len(df)
     
     df.dropna(subset=['rm_scores'], inplace=True)
-    df = df[df['rm_scores'].apply(lambda s: isinstance(s, list) and len(s) == args.pairs)]
+    # df = df[df['rm_scores'].apply(lambda s: isinstance(s, list) and len(s) == args.pairs)]
+    def is_valid_scores(s):
+        # Chấp nhận cả list và mảng NumPy
+        is_list_or_array = isinstance(s, (list, np.ndarray))
+        if not is_list_or_array:
+            return False
+        # Kiểm tra độ dài
+        return len(s) == args.pairs
+    
+    df = df[df['rm_scores'].apply(is_valid_scores)]
     
     print(f"Filtered {original_len - len(df)} invalid rows -> {len(df)} remaining.")
     if len(df) == 0:
