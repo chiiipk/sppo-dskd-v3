@@ -44,13 +44,13 @@ bash scripts/generate.sh \
     --tensor_parallel_size 1 \
     --bt_conversion_method bradley_terry_mle
 
-echo "=== Step 2: Computing probabilities and preparing dataset ==="
-python3 scripts/compute_prob.py \
-    --gpu_ids "0,1" \
-    --output_dir $OUT \
-    --pairs 5 \
-    --frac_len 6000 \
-    --prompts $PROMPT
+# echo "=== Step 2: Computing probabilities and preparing dataset ==="
+# python3 scripts/compute_prob.py \
+#     --gpu_ids "0,1" \
+#     --output_dir $OUT \
+#     --pairs 5 \
+#     --frac_len 6000 \
+#     --prompts $PROMPT
 
 echo "=== Step 3: Training GPT-2 student model with SPPO ==="
 bash scripts/pipeline.sh \
