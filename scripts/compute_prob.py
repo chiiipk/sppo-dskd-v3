@@ -13,7 +13,7 @@ def parse_arguments():
     parser.add_argument("--output_dir", type=str, default="/kaggle/working/kd-gpt2-qwen-dolly-iter1")
     parser.add_argument("--pairs", type=int, default=5)
     parser.add_argument("--prompts", type=str, default="/kaggle/working/data/dolly/train.jsonl")
-    parser.add_argument("--frac_len", type=int, default=0)
+    parser.add_argument("--frac_len", type=int, default=6000)
     parser.add_argument("--num_gpu", type=int, default=2)
     parser.add_argument("--gpu_ids", type=str, default=None)
     parser.add_argument("--data_frac", type=int, default=0)       # <-- ADDED: data_frac used when filenames include it
