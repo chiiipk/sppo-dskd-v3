@@ -225,4 +225,11 @@ def prepare_score_from_parquet(parquet_path, args):
     train_new.to_parquet(os.path.join(outdir, "train.parquet"), index=False)
     test = train_new.sample(n=min(500, len(train_new)))
     test.to_parquet(os.path.join(outdir, "test.parquet"), index=False)
-    print("Saved
+    print("Saved synthetic dataset to:", outdir)
+    return outdir
+
+if __name__ == "__main__":
+    args = parse_arguments()
+    parquet_path = from_ranks(args)           # produces OUT/generated/train.parquet
+    out_dir = prepare_score_from_parquet(parquet_path, args)
+    print("Done. synthetic dataset:", out_dir)
