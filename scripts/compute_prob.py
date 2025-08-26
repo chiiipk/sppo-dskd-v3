@@ -110,7 +110,7 @@ def prepare_score(args):
         # --- FIX CHÍNH: Lọc bỏ các hàng có giá trị None ở CẢ HAI cột quan trọng ---
     # --- FIX CUỐI CÙNG: Lọc sâu để loại bỏ các giá trị None bên trong list/matrix ---
     original_len = len(train)
-        def is_valid_matrix(matrix, pairs):
+    def is_valid_matrix(matrix, pairs):
         """Kiểm tra xem một ma trận có hợp lệ không (không None, đúng shape, và không chứa None bên trong)."""
         if not isinstance(matrix, list) or len(matrix) != pairs:
             return False
