@@ -130,7 +130,7 @@ def from_ranks(args):
     for p in range(args.pairs):
         convs = []
         for i in range(n):
-            prompt_text = data[i]["prompt"] if "prompt" in data[i] else ""
+            prompt_text = data[i]["text_prompt"] if "text_prompt" in data[i] else ""
             convs.append([
                 {"content": prompt_text, "role": "user"},
                 {"content": responses[p][i], "role": "assistant"}
