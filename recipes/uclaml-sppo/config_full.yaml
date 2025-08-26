@@ -21,6 +21,7 @@ gradient_accumulation_steps: 1
 gradient_checkpointing: true
 gradient_checkpointing_kwargs:
   use_reentrant: False
+max_grad_norm: 1.0
 hub_model_id: mistral-7b-instruct-sppo-iter1
 remove_unused_columns: false
 learning_rate: 5.0e-7
