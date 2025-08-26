@@ -1,5 +1,6 @@
+# save as scripts/prepare_from_ranks.py
 import numpy as np
-from datasets import load_dataset, Dataset
+from datasets import Dataset
 import json
 import argparse
 import pandas as pd
@@ -7,226 +8,218 @@ import datasets
 import os
 
 def parse_arguments():
-    """Parse command line arguments."""
     parser = argparse.ArgumentParser()
-    # Đường dẫn mặc định đã là đường dẫn tuyệt đối, rất tốt.
-    parser.add_argument("--output_dir", type=str, default="/kaggle/working/generated/iter1")
+    # args.output_dir should be the OUT directory you used for generate/combine (e.g. /kaggle/working/kd-... )
+    parser.add_argument("--output_dir", type=str, default="/kaggle/working/kd-gpt2-qwen-dolly-iter1")
     parser.add_argument("--pairs", type=int, default=5)
     parser.add_argument("--prompts", type=str, default="/kaggle/working/data/dolly/train.jsonl")
     parser.add_argument("--frac_len", type=int, default=0)
-    parser.add_argument("--num_gpu", type=int, default=8)
-    parser.add_argument("--org", type=str, default="local")
+    parser.add_argument("--num_gpu", type=int, default=2)
     parser.add_argument("--gpu_ids", type=str, default=None)
+    parser.add_argument("--ranking_root", type=str, default=None)
+...
+# sau khi parse args:
+    if args.ranking_root is None:
+        ranking_dir = os.path.join(args.output_dir, "ranking")
+    else:
+        ranking_dir = args.ranking_root
+      # where ranking npy are stored
+        parser.add_argument("--org", type=str, default="local")
     return parser.parse_args()
 
-def from_ranks(args):
-    num_gpu = args.num_gpu
-    pairs = args.pairs
-
+def load_prompts(prompts_path):
     data_list = []
-    with open(args.prompts, 'r', encoding='utf-8') as f:
+    with open(prompts_path, 'r', encoding='utf-8') as f:
         for line in f:
             item = json.loads(line.strip())
             data_list.append(item)
-    data = Dataset.from_list(data_list)
-    print(f"Length of dataset: {len(data)}")
+    return Dataset.from_list(data_list)
 
-    scores = [0 for _ in range(len(data))]
-    if args.gpu_ids is not None:
+def from_ranks(args):
+    # load prompts
+    data = load_prompts(args.prompts)
+    n = len(data)
+    print(f"Loaded {n} prompts from {args.prompts}")
+
+    # prepare where to read ranking npy files
+    base_name = os.path.basename(os.path.normpath(args.output_dir))
+    ranking_dir = os.path.join(args.ranking_root, base_name)
+    print("Looking for ranking files under:", ranking_dir)
+
+    # determine GPUs list
+    if args.gpu_ids:
         gpus = args.gpu_ids.strip("()").split(',')
+        gpus = [g.strip() for g in gpus if g.strip()!='']
     else:
-        gpus = range(args.num_gpu)
+        gpus = [str(i) for i in range(args.num_gpu)]
 
-    for data_frac, idx in enumerate(gpus):
-        # SỬA LỖI: Bỏ dấu "/" ở đầu "ranking/"
-        file_path = os.path.join(args.output_dir, "ranking", f"{idx}_{data_frac}.npy")
-        try:
-            locals_scores = np.load(file_path)
-            locals_scores = list(locals_scores)
-            for lidx, sc in enumerate(locals_scores):
-                scores[data_frac * args.frac_len + lidx] = sc
-        except FileNotFoundError:
-            print(f"Warning: Ranking file not found at {file_path}. Skipping.")
+    # init scores placeholder (each entry should be a list of length pairs after fill)
+    scores = [None] * n
+
+    # read ranking npy for each gpu/data_frac
+    for data_frac_idx, gpu_id in enumerate(gpus):
+        fn = os.path.join(ranking_dir, f"{gpu_id}_{data_frac_idx}.npy")
+        if not os.path.exists(fn):
+            print(f"Warning: ranking file not found: {fn} (skipping)")
             continue
+        arr = np.load(fn, allow_pickle=True)
+        arr = list(arr)
+        # fill into scores array using frac_len
+        start = data_frac_idx * args.frac_len if args.frac_len > 0 else 0
+        for i, val in enumerate(arr):
+            idx = start + i
+            if idx < n:
+                scores[idx] = val
+            else:
+                print(f"Warning: index {idx} >= n ({n}), skipping extra ranking entry")
 
-
-    probs = []
-    rm_scores = []
-    for idx, score in enumerate(scores):
-        if isinstance(score, int): # Bỏ qua nếu điểm số chưa được cập nhật
-            prb = [[0.0] * pairs for _ in range(pairs)]
+    # replace any None with fallback (zeros list)
+    for i in range(n):
+        if scores[i] is None:
+            scores[i] = [0.0] * args.pairs
         else:
-            prb = np.zeros((pairs, pairs))
-            for i in range(pairs):
-                for j in range(pairs):
-                    prb[i][j] = 1 / (1 + np.exp(score[j] - score[i]))
-            prb = prb.tolist()
-        probs.append(prb)
-        rm_scores.append(score)
+            # ensure length pairs
+            if len(scores[i]) != args.pairs:
+                # try to pad or truncate
+                arr = list(scores[i])
+                if len(arr) < args.pairs:
+                    arr = arr + [0.0] * (args.pairs - len(arr))
+                else:
+                    arr = arr[:args.pairs]
+                scores[i] = arr
 
-    # SỬA LỖI: Bỏ dấu "/" ở đầu "generated"
-    out_dir = os.path.join(args.output_dir, "generated")
-    os.makedirs(out_dir, exist_ok=True)
+    # compute probabilities (pairwise Bradley-Terry-like) robustly
+    probs = []
+    for sc in scores:
+        sc_arr = np.array(sc, dtype=float)
+        # compute pairwise win prob: sigmoid(score_i - score_j)
+        prb = np.zeros((args.pairs, args.pairs), dtype=float)
+        for i in range(args.pairs):
+            for j in range(args.pairs):
+                prb[i, j] = 1.0 / (1.0 + np.exp(sc_arr[j] - sc_arr[i]))
+        probs.append(prb.tolist())
 
-    print("Saving probabilities...")
-    with open(os.path.join(out_dir, "probabilities.json"), "w") as f:
-        json.dump(probs, f)
+    # responses (combined) are expected in args.output_dir as responses_0.json ... responses_{pairs-1}.json
+    responses = []
+    for p in range(args.pairs):
+        resp_file = os.path.join(args.output_dir, f"responses_{p}.json")
+        if not os.path.exists(resp_file):
+            print(f"Warning: response file missing: {resp_file}. Will fill with empty strings.")
+            responses.append([""] * n)
+            continue
+        with open(resp_file, 'r', encoding='utf-8') as f:
+            arr = json.load(f)
+        # if combined file is responses_{p}.json with length n -> good, else pad/truncate
+        if len(arr) != n:
+            print(f"Warning: responses_{p}.json length {len(arr)} != n {n}. Padding/truncating.")
+            if len(arr) < n:
+                arr = arr + [""] * (n - len(arr))
+            else:
+                arr = arr[:n]
+        responses.append(arr)
 
-    df = data.to_pandas()
-    for i in range(pairs):
-        resp_file = os.path.join(out_dir, f"responses_{i}.json")
-        try:
-            with open(resp_file) as f:
-                responses = json.load(f)
-
-            if len(responses) != len(data):
-                 print(f"Warning: Mismatch length for responses_{i}.json. Padding with empty strings.")
-                 responses.extend([""] * (len(data) - len(responses)))
-
-            fmt = [
-                [
-                    {"content": data[j]["prompt"], "role": "user"},
-                    {"content": responses[j], "role": "assistant"},
-                ]
-                for j in range(len(data))
-            ]
-            df[f"generate_{i}"] = fmt
-        except FileNotFoundError:
-            print(f"Warning: Response file not found at {resp_file}. Creating empty column.")
-            df[f"generate_{i}"] = [[] for _ in range(len(df))]
-
+    # build dataframe like your parquet (generate_0.. generate_{pairs-1}, probability, rm_scores)
+    df = pd.DataFrame()
+    for p in range(args.pairs):
+        # create conversation struct: [ {"content": prompt, "role":"user"}, {"content": response, "role":"assistant"} ]
+        convs = []
+        for i in range(n):
+            prompt_text = data[i]["prompt"] if "prompt" in data[i] else ""
+            convs.append([
+                {"content": prompt_text, "role": "user"},
+                {"content": responses[p][i], "role": "assistant"}
+            ])
+        df[f"generate_{p}"] = convs
 
     df["probability"] = probs
-    df["rm_scores"] = rm_scores
-    df.to_parquet(os.path.join(out_dir, "train.parquet"))
+    df["rm_scores"] = scores
 
-def prepare_score(args):
-    # SỬA LỖI: Bỏ dấu "/" ở đầu "generated/"
-    parquet_path = os.path.join(args.output_dir, "generated", "train.parquet")
-    print(f"Loading parquet file from: {parquet_path}")
-    train = datasets.load_dataset("parquet", data_files={"train": parquet_path})
-    train = pd.DataFrame(train['train'])
+    # save parquet under the OUT directory itself to match later steps
+    os.makedirs(args.output_dir, exist_ok=True)
+    parquet_path = os.path.join(args.output_dir, "train.parquet")
+    df.to_parquet(parquet_path, index=False)
+    print("Saved combined parquet to:", parquet_path)
+    return parquet_path
 
-        # --- FIX CHÍNH: Lọc bỏ các hàng có giá trị None ở CẢ HAI cột quan trọng ---
-    # --- FIX CUỐI CÙNG: Lọc sâu để loại bỏ các giá trị None bên trong list/matrix ---
-    original_len = len(train)
-    def is_valid_matrix(matrix, pairs):
-        """Kiểm tra xem một ma trận có hợp lệ không (không None, đúng shape, và không chứa None bên trong)."""
-        if not isinstance(matrix, list) or len(matrix) != pairs:
-            return False
-        for row in matrix:
-            if not isinstance(row, list) or len(row) != pairs:
+def prepare_score_from_parquet(parquet_path, args):
+    print("Loading parquet:", parquet_path)
+    df = pd.read_parquet(parquet_path)
+    original_len = len(df)
+
+    # validation helpers
+    def is_valid_matrix(m):
+        if not isinstance(m, list): return False
+        if len(m) != args.pairs: return False
+        for row in m:
+            if not isinstance(row, list) or len(row) != args.pairs:
                 return False
-            if any(x is None for x in row): # Kiểm tra None bên trong từng hàng
+            if any(x is None for x in row):
                 return False
         return True
 
-    def is_valid_scores(scores, pairs):
-        """Kiểm tra xem danh sách điểm số có hợp lệ không."""
-        if not isinstance(scores, list) or len(scores) != pairs:
-            return False
-        if any(x is None for x in scores): # Kiểm tra None bên trong danh sách
-            return False
+    def is_valid_scores(s):
+        if not isinstance(s, list): return False
+        if len(s) != args.pairs: return False
+        if any(x is None for x in s): return False
         return True
 
-    # Áp dụng các hàm lọc mạnh mẽ hơn
-    train = train[train['probability'].apply(lambda x: is_valid_matrix(x, args.pairs))]
-    train = train[train['rm_scores'].apply(lambda x: is_valid_scores(x, args.pairs))]
+    mask = df['probability'].apply(lambda x: is_valid_matrix(x)) & df['rm_scores'].apply(lambda x: is_valid_scores(x))
+    df_valid = df[mask].reset_index(drop=True)
+    print(f"Filtered {original_len - len(df_valid)} invalid rows -> {len(df_valid)} remaining.")
+    if len(df_valid) == 0:
+        raise RuntimeError("No valid rows after filtering. Cannot prepare final dataset.")
 
-    print(f"Filtered out {original_len - len(train)} invalid rows. {len(train)} valid rows remaining.")
+    # metrics array: shape (N, pairs)
+    metrics = np.vstack(df_valid['rm_scores'].apply(lambda x: np.array(x[:args.pairs], dtype=float)).values)
+    # chosen index = argmax, rejected index = argmin
+    chosen_idx = np.argmax(metrics, axis=1)
+    rejected_idx = np.argmin(metrics, axis=1)
 
-    if len(train) == 0:
-        print("Error: No valid data remaining after filtering. Cannot create final dataset.")
-        return None
+    # helper to extract assistant text from generate_* conversation struct
+    def extract_assistant(conv):
+        if not isinstance(conv, list) or len(conv) == 0:
+            return ""
+        # find last dict with role 'assistant', fallback to last element
+        for item in reversed(conv):
+            if isinstance(item, dict) and item.get('role','') == 'assistant':
+                return item.get('content','')
+        # fallback
+        last = conv[-1]
+        return last.get('content','') if isinstance(last, dict) else str(last)
 
-    metrics = train['rm_scores'].apply(lambda x: np.array(x[-args.pairs:]))
-    metrics_prob = train['probability'].apply(lambda x: np.stack(x).sum(axis=1))
-    maxmin = metrics.apply(lambda x: [x.argmax(), x.argmin()])
-    def flatten_conversation(conv_list):
-            """Extracts the assistant's response text from a conversation struct."""
-            if not isinstance(conv_list, list) or len(conv_list) < 2: return ""
-            # Trả về nội dung của tin nhắn cuối cùng (của assistant)
-            return conv_list[-1].get('content', '')
-    
-    chosen_text, rejected_text, prompt_text = [], [], []
-    for i in range(len(train)):
-        idx_pair = maxmin_indices.iloc[i]
-        
-        chosen_conversation = train[f"generate_{idx_pair[0]}"].iloc[i]
-        rejected_conversation = train[f"generate_{idx_pair[1]}"].iloc[i]
-        
-        # Áp dụng hàm làm phẳng để lấy văn bản thuần túy
-        chosen_text.append(flatten_conversation(chosen_conversation))
-        rejected_text.append(flatten_conversation(rejected_conversation))
-        # Trích xuất prompt từ một trong các hội thoại
-        if isinstance(chosen_conversation, list) and len(chosen_conversation) > 0:
-            prompt_text.append(chosen_conversation[0].get('content', ''))
-        else:
-            prompt_text.append('') # Thêm prompt rỗng nếu có lỗi
+    prompts_out, chosen_out, rejected_out = [], [], []
+    for i in range(len(df_valid)):
+        ci = chosen_idx[i]
+        ri = rejected_idx[i]
+        gen_c = df_valid.loc[i, f"generate_{ci}"] if f"generate_{ci}" in df_valid.columns else []
+        gen_r = df_valid.loc[i, f"generate_{ri}"] if f"generate_{ri}" in df_valid.columns else []
+        chosen_txt = extract_assistant(gen_c)
+        rejected_txt = extract_assistant(gen_r)
+        # prompt: take from the user role of chosen conv if possible
+        prompt_txt = ""
+        if isinstance(gen_c, list) and len(gen_c) > 0 and isinstance(gen_c[0], dict):
+            prompt_txt = gen_c[0].get('content','')
+        prompts_out.append(prompt_txt)
+        chosen_out.append(chosen_txt)
+        rejected_out.append(rejected_txt)
 
-    # Tạo DataFrame cuối cùng với các cột VĂN BẢN
     train_new = pd.DataFrame({
-        'prompt': prompt_text,
-        'chosen': chosen_text, 
-        'rejected': rejected_text
+        "prompt": prompts_out,
+        "chosen": chosen_out,
+        "rejected": rejected_out
     })
 
-    # train_ordered = train[[f"generate_{i}" for i in range(args.pairs)] + ['probability']]
-
-    # chosen = [train_ordered.iloc[i, maxmin.iloc[i][0]] for i in range(len(train_ordered))]
-    # rejected = [train_ordered.iloc[i, maxmin.iloc[i][1]] for i in range(len(train_ordered))]
-
-    # chosen_probs = [train_ordered['probability'].iloc[i][maxmin.iloc[i][0]][maxmin.iloc[i][1]] for i in range(len(train_ordered))]
-    # chosen_probs_win = [metrics_prob.iloc[i][maxmin.iloc[i][0]] / len(metrics_prob.iloc[0]) for i in range(len(metrics_prob))]
-    # chosen_probs_lose = [metrics_prob.iloc[i][maxmin.iloc[i][1]] / len(metrics_prob.iloc[0]) for i in range(len(metrics_prob))]
-
-    # train_new = pd.DataFrame({
-    #     'chosen': chosen,
-    #     'rejected': rejected,
-    #     'chosen_probs': chosen_probs,
-    #     'chosen_probs_win': chosen_probs_win,
-    #     'chosen_probs_lose': chosen_probs_lose
-    # })
-
-    # Lấy tên thư mục cuối cùng từ output_dir để đặt tên cho file synthetic
-    output_base_name = os.path.basename(os.path.normpath(args.output_dir))
-    OUTPATH = f'/kaggle/working/synthetic_data_{output_base_name}_score'
-    os.makedirs(OUTPATH, exist_ok=True)
-
-    train_new.to_parquet(f'{OUTPATH}/train.parquet', index=False)
-    print(f"Saved file to {OUTPATH}/train.parquet")
-
+    base = os.path.basename(os.path.normpath(os.path.dirname(parquet_path)))  # take parent folder name
+    outdir = f"/kaggle/working/synthetic_data_{base}_score"
+    os.makedirs(outdir, exist_ok=True)
+    train_new.to_parquet(os.path.join(outdir, "train.parquet"), index=False)
     test = train_new.sample(n=min(500, len(train_new)))
-    test.to_parquet(f'{OUTPATH}/test.parquet', index=False)
-    print(f"Saved file to {OUTPATH}/test.parquet")
-
-    return OUTPATH
-
-def push_dataset(file_dir, org):
-    if file_dir is None:
-        print("Skipping push_dataset due to previous errors.")
-        return
-    data = Dataset.from_parquet(f"{file_dir}/train.parquet")
-    try:
-        test = Dataset.from_parquet(f"{file_dir}/test.parquet")
-    except:
-        train = pd.read_parquet(f"{file_dir}/train.parquet")
-        test = train.sample(n=min(500, len(train)))
-        test.to_parquet(f"{file_dir}/test.parquet", index=False)
-        test = Dataset.from_parquet(f"{file_dir}/test.parquet")
-    # data.push_to_hub(f"{org}/{file_dir}", split="train", private=True)
-    # test.push_to_hub(f"{org}/{file_dir}", split="test", private=True)
+    test.to_parquet(os.path.join(outdir, "test.parquet"), index=False)
+    print("Saved synthetic dataset to:", outdir)
+    return outdir
 
 if __name__ == "__main__":
     args = parse_arguments()
-    from_ranks(args)
-    # SỬA LỖI: Bỏ dấu "/" ở đầu "generated/"
-    generated_parquet_path = os.path.join(args.output_dir, "generated", "train.parquet")
-    if os.path.exists(generated_parquet_path):
-        data = Dataset.from_parquet(generated_parquet_path)
-        # SỬA LỖI: Cải thiện câu thông báo cho rõ ràng hơn
-        print(f"Generated data saved locally to {os.path.dirname(generated_parquet_path)}")
-        out_path = prepare_score(args)
-        push_dataset(out_path, args.org)
-    else:
-        print(f"Error: Parquet file not found at {generated_parquet_path}. Cannot proceed to scoring and pushing dataset.")
+    parquet_path = from_ranks(args)           # produces OUT/train.parquet
+    out_dir = prepare_score_from_parquet(parquet_path, args)
+    print("Done. synthetic dataset:", out_dir)
