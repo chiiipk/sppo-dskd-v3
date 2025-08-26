@@ -17,8 +17,6 @@ def parse_arguments():
     parser.add_argument("--num_gpu", type=int, default=2)
     parser.add_argument("--gpu_ids", type=str, default=None)
     parser.add_argument("--ranking_root", type=str, default=None)
-...
-# sau khi parse args:
     if args.ranking_root is None:
         ranking_dir = os.path.join(args.output_dir, "ranking")
     else:
