@@ -144,11 +144,6 @@ def from_ranks(args):
     generated_dir = os.path.join(args.output_dir, "generated")
     os.makedirs(generated_dir, exist_ok=True)
     parquet_path = os.path.join(generated_dir, "train.parquet")
-    # trước khi to_parquet(...)
-    df["text_prompt"] = df["prompt"]
-    df["text_chosen"] = df["chosen"]
-    df["text_rejected"] = df["rejected"]
-
     df.to_parquet(parquet_path, index=False)
     print("Saved combined parquet to:", parquet_path)
     return parquet_path
@@ -213,9 +208,9 @@ def prepare_score_from_parquet(parquet_path, args):
         rejected_out.append(rejected_txt)
 
     train_new = pd.DataFrame({
-        "prompt": prompts_out,
-        "chosen": chosen_out,
-        "rejected": rejected_out
+        "text_prompt": prompts_out,
+        "text_chosen": chosen_out,
+        "text_rejected": rejected_out
     })
 
     # base from args.output_dir to create synthetic folder name
