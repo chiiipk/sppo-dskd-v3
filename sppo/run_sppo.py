@@ -226,7 +226,11 @@ def main_inner(model_args, data_args, training_args):
     data_args.truncation_side = "left"
     tokenizer = get_tokenizer(model_args, data_args)
     tokenized_datasets = load_and_process_datasets(data_args, training_args, tokenizer)
-
+    data_collator = DPODataCollatorWithPadding(
+        pad_token_id=tokenizer.pad_token_id,
+        label_pad_token_id=-100,
+        is_encoder_decoder=False # Giả sử mô hình của bạn là decoder-only
+    )
     model, ref_model, model_kwargs, ref_model_kwargs = setup_model(model_args, training_args)
 
     trainer = SPPOTrainer(
@@ -240,6 +244,7 @@ def main_inner(model_args, data_args, training_args):
         tokenizer=tokenizer,
         max_length=training_args.max_length,
         max_prompt_length=training_args.max_prompt_length,
+        data_collator=data_collator,
         peft_config=get_peft_config(model_args),
         loss_type=training_args.loss_type,
     )
