@@ -47,26 +47,40 @@ def setup_logging(log_level):
     transformers.utils.logging.enable_explicit_format()
 
 def load_and_process_datasets(data_args, tokenizer):
+    """
+    Hàm này tải dataset, trích xuất văn bản thô từ cấu trúc phức tạp,
+    và trả về một dataset sẵn sàng cho SPPOTrainer.
+    """
+    # 1. Tải dữ liệu gốc
     raw_datasets = get_datasets(data_args, splits=["train"])
     logger.info(
         f"Training on the following splits: {[split + ' : ' + str(dset.num_rows) for split, dset in raw_datasets.items()]}"
     )
-    column_names = list(raw_datasets["train"].features)
-    column_names = [x for x in column_names if x not in ['chosen_probs', 'chosen_probs_win', 'chosen_probs_lose']]
+    
+    # 2. Định nghĩa hàm để trích xuất văn bản
+    def format_row(feature):
+        # Trích xuất văn bản từ lượt trả lời của assistant
+        # Giả sử cấu trúc luôn là [user, assistant]
+        # Thêm kiểm tra để đảm bảo không bị lỗi nếu cấu trúc khác
+        if isinstance(feature["chosen"], list) and len(feature["chosen"]) > 1:
+            feature["chosen"] = feature["chosen"][1].get("content", "")
+        else:
+            feature["chosen"] = "" # Hoặc một giá trị mặc định khác
+            
+        if isinstance(feature["rejected"], list) and len(feature["rejected"]) > 1:
+            feature["rejected"] = feature["rejected"][1].get("content", "")
+        else:
+            feature["rejected"] = ""
+            
+        return feature
 
+    # 3. Áp dụng hàm trích xuất
     raw_datasets = raw_datasets.map(
-        apply_chat_template,
-        fn_kwargs={"tokenizer": tokenizer, "skip_system_message": True},
+        format_row, 
         num_proc=data_args.preprocessing_num_workers,
-        remove_columns=column_names,
-        desc="Formatting comparisons with prompt template",
+        desc="Formatting raw strings from STRUCT"
     )
-
-    for split in ["train"]:
-        raw_datasets[split] = raw_datasets[split].rename_columns(
-            {"text_prompt": "prompt", "text_chosen": "chosen", "text_rejected": "rejected"}
-        )
-
+    
     return raw_datasets
 
 def setup_model(model_args, training_args):
