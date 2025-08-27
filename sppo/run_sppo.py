@@ -1,7 +1,3 @@
-#!/usr/bin/env python
-#
-# Adapted from https://github.com/huggingface/alignment-handbook
-
 import logging
 import random
 import sys
@@ -56,31 +52,36 @@ def load_and_process_datasets(data_args, tokenizer):
     logger.info(
         f"Training on the following splits: {[split + ' : ' + str(dset.num_rows) for split, dset in raw_datasets.items()]}"
     )
-    
+
     # 2. Định nghĩa hàm để trích xuất văn bản
     def format_row(feature):
         # Trích xuất văn bản từ lượt trả lời của assistant
-        # Giả sử cấu trúc luôn là [user, assistant]
-        # Thêm kiểm tra để đảm bảo không bị lỗi nếu cấu trúc khác
-        if isinstance(feature["chosen"], list) and len(feature["chosen"]) > 1:
-            feature["chosen"] = feature["chosen"][1].get("content", "")
+        # Dựa trên hình ảnh, 'chosen' và 'rejected' là list chứa 1 dict
+        # {"content": "...", "role": "..."}
+        if isinstance(feature["chosen"], list) and len(feature["chosen"]) > 0:
+            # Lấy phần tử đầu tiên của list và sau đó lấy giá trị của key "content"
+            feature["chosen"] = feature["chosen"][0].get("content", "")
         else:
-            feature["chosen"] = "" # Hoặc một giá trị mặc định khác
-            
-        if isinstance(feature["rejected"], list) and len(feature["rejected"]) > 1:
-            feature["rejected"] = feature["rejected"][1].get("content", "")
+            feature["chosen"] = "" # Đảm bảo luôn là string, ngay cả khi rỗng
+
+        if isinstance(feature["rejected"], list) and len(feature["rejected"]) > 0:
+            # Lấy phần tử đầu tiên của list và sau đó lấy giá trị của key "content"
+            feature["rejected"] = feature["rejected"][0].get("content", "")
         else:
-            feature["rejected"] = ""
-            
+            feature["rejected"] = "" # Đảm bảo luôn là string, ngay cả khi rỗng
+        
+        # 'prompt' column is already VARCHAR, so it should be a string.
+        # No change needed for 'prompt' based on the provided schema.
+        
         return feature
 
     # 3. Áp dụng hàm trích xuất
     raw_datasets = raw_datasets.map(
-        format_row, 
+        format_row,
         num_proc=data_args.preprocessing_num_workers,
         desc="Formatting raw strings from STRUCT"
     )
-    
+
     return raw_datasets
 
 def setup_model(model_args, training_args):
