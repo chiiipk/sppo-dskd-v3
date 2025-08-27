@@ -1356,56 +1356,6 @@ class SPPOTrainer(Trainer):
             print(f"[DEBUG_COMPUTE_LOSS] Rank {_rank_id}: inspect failed: {_e}")
         # --- DEBUG END: compute_loss ---
 
-        # --- BẮT ĐẦU PHẦN SỬA LỖI ---
-        if isinstance(inputs, str):
-            import json
-            # Cố gắng phân tích cú pháp chuỗi nếu nó là JSON (có thể là một ví dụ duy nhất)
-            try:
-                parsed_input = json.loads(inputs)
-                if isinstance(parsed_input, dict) and "prompt" in parsed_input:
-                    # Nếu nó là một dict hợp lệ, chúng ta sẽ cố gắng tokenize lại nó
-                    # Đây là một kịch bản không mong muốn, nhưng cần xử lý
-                    print(f"[DEBUG_COMPUTE_LOSS] Rank {_rank_id}: Attempting to re-tokenize raw string input.")
-                    # Tạo một dictionary giả để tokenize_row có thể xử lý
-                    temp_feature = {
-                        "prompt": parsed_input.get("prompt", ""),
-                        "chosen": parsed_input.get("chosen", ""), # Giả định có thể có chosen/rejected
-                        "rejected": parsed_input.get("rejected", "")
-                    }
-                    # Gọi tokenize_row để tạo ra một batch giả
-                    tokenized_data = self.tokenize_row(temp_feature)
-                    
-                    # Cách tốt nhất là mô phỏng lại đầu ra của collator cho một batch đơn
-                    # Tạo các tensor từ các list đã tokenize
-                    reconstructed_batch = {}
-                    for k, v in tokenized_data.items():
-                        if isinstance(v, list):
-                            reconstructed_batch[k] = torch.tensor([v], dtype=torch.long, device=model.device)
-                        else: # Ví dụ: chosen_probs
-                            reconstructed_batch[k] = torch.tensor([v], dtype=torch.float, device=model.device)
-                    inputs = reconstructed_batch
-                    print(f"[DEBUG_COMPUTE_LOSS] Rank {_rank_id}: Successfully re-tokenized and reconstructed batch from string.")
-                else:
-                    # Nếu không phải là JSON hợp lệ hoặc không có "prompt", vẫn báo lỗi
-                    cleaned_inputs_head = inputs[:200].replace('\n', ' ')
-                    raise ValueError(f"Rank {_rank_id}: Received raw string input in compute_loss that could not be re-tokenized: {cleaned_inputs_head}...")
-            except json.JSONDecodeError:
-                # Nếu không phải là JSON, thì đây là một chuỗi thô không thể xử lý
-                cleaned_inputs_head = inputs[:200].replace('\n', ' ')
-                raise ValueError(f"Rank {_rank_id}: Received raw string input in compute_loss that is not JSON and cannot be processed: {cleaned_inputs_head}...")
-        elif isinstance(inputs, list) and inputs and isinstance(inputs[0], str):
-            # Nếu là list of strings, cũng là lỗi nghiêm trọng
-            cleaned_inputs_head = inputs[0][:200].replace('\n', ' ')
-            raise ValueError(f"Rank {_rank_id}: Received list of raw string inputs in compute_loss. This indicates a critical data pipeline issue. First item: {cleaned_inputs_head}...")
-        # --- KẾT THÚC PHẦN SỬA LỖI ---
-
-        # Các kiểm tra khác vẫn giữ nguyên
-        if not self.use_dpo_data_collator:
-            warnings.warn(
-                "compute_loss is only implemented for DPODataCollatorWithPadding, and you passed a datacollator that is different than "
-                "DPODataCollatorWithPadding - you might see unexpected behavior. Alternatively, you can implement your own prediction_step method if you are using a custom data collator"
-            )
-
         # Disallow fallback tokenization path to ensure dataset mapping is used
         if (
             isinstance(inputs, dict)
@@ -1420,6 +1370,12 @@ class SPPOTrainer(Trainer):
             )
             raise ValueError(error_message)
             
+        if not self.use_dpo_data_collator:
+            warnings.warn(
+                "compute_loss is only implemented for DPODataCollatorWithPadding, and you passed a datacollator that is different than "
+                "DPODataCollatorWithPadding - you might see unexpected behavior. Alternatively, you can implement your own prediction_step method if you are using a custom data collator"
+            )
+
         compute_loss_context_manager = torch.cuda.amp.autocast if self._peft_has_been_casted_to_bf16 else nullcontext
 
         with compute_loss_context_manager():
