@@ -602,16 +602,20 @@ class SPPOTrainer(Trainer):
             raise ValueError("Trainer: training requires a train_dataset.")
 
         train_sampler = self._get_train_sampler()
+
+        # --- SỬA ĐỔI CHÍNH Ở ĐÂY ---
+        # Thay vì để accelerator.prepare(DataLoader(...)), chúng ta sẽ chuẩn bị DataLoader
+        # và sau đó để accelerator chuẩn bị DataLoader đã tạo.
         dataloader = DataLoader(
             self.train_dataset,
             batch_size=self.args.per_device_train_batch_size,
             sampler=train_sampler,
             collate_fn=self.data_collator,
             drop_last=self.args.dataloader_drop_last,
-            num_workers=self.args.dataloader_num_workers,
+            num_workers=self.args.dataloader_num_workers, # Giữ nguyên num_workers=0 như đã sửa trước đó
             pin_memory=self.args.dataloader_pin_memory,
         )
-        return self.accelerator.prepare(dataloader)
+        return self.accelerator.prepare(dataloader) # Để accelerator chuẩn bị DataLoader đã tạo
 
     def get_eval_dataloader(self, eval_dataset: Optional[Dataset] = None) -> DataLoader:
         """
@@ -663,8 +667,19 @@ class SPPOTrainer(Trainer):
                 self.eval_dataset = eval_dataset
             self._precomputed_eval_ref_log_probs = True
 
-        return super().get_eval_dataloader(eval_dataset=eval_dataset)
-
+        # --- SỬA ĐỔI CHÍNH Ở ĐÂY ---
+        # Thay vì để accelerator.prepare(DataLoader(...)), chúng ta sẽ chuẩn bị DataLoader
+        # và sau đó để accelerator chuẩn bị DataLoader đã tạo.
+        dataloader = DataLoader(
+            eval_dataset,
+            batch_size=self.args.per_device_eval_batch_size,
+            sampler=self._get_eval_sampler(eval_dataset), # Sử dụng _get_eval_sampler
+            collate_fn=self.data_collator,
+            drop_last=self.args.dataloader_drop_last,
+            num_workers=self.args.dataloader_num_workers, # Giữ nguyên num_workers=0
+            pin_memory=self.args.dataloader_pin_memory,
+        )
+        return self.accelerator.prepare(dataloader)
     def build_tokenized_answer(self, prompt, answer):
         """
         Llama tokenizer does satisfy `enc(a + b) = enc(a) + enc(b)`.
