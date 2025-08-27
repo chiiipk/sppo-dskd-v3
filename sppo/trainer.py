@@ -373,7 +373,7 @@ class SPPOTrainer(Trainer):
         self._tokenizer = tokenizer
         self.precompute_ref_log_probs = precompute_ref_log_probs
 
-        Tokenize datasets upfront for DPODataCollatorWithPadding
+        #Tokenize datasets upfront for DPODataCollatorWithPadding
         def _map_dataset(ds: Dataset) -> Dataset:
             if ds is None:
                 return ds
