@@ -1328,9 +1328,6 @@ class SPPOTrainer(Trainer):
 
         return losses.mean(), metrics
 
-# Trong file /kaggle/working/sppo-dskd-v3/sppo/trainer.py
-# ...
-
     def compute_loss(
         self,
         model: Union[PreTrainedModel, nn.Module],
@@ -1356,9 +1353,8 @@ class SPPOTrainer(Trainer):
         except Exception as _e:
             print(f"[DEBUG_COMPUTE_LOSS] Rank {_rank_id}: inspect failed: {_e}")
         # --- DEBUG END: compute_loss ---
-    
-    
-    
+
+        # --- BẮT ĐẦU PHẦN SỬA LỖI ---
         if isinstance(inputs, str):
             import json
             # Cố gắng phân tích cú pháp chuỗi nếu nó là JSON (có thể là một ví dụ duy nhất)
@@ -1376,10 +1372,6 @@ class SPPOTrainer(Trainer):
                     }
                     # Gọi tokenize_row để tạo ra một batch giả
                     tokenized_data = self.tokenize_row(temp_feature)
-                    # DPODataCollatorWithPadding mong đợi một list các features
-                    # Chúng ta cần tạo một batch từ tokenized_data
-                    # Đây là một điểm phức tạp vì tokenize_row trả về dict of lists (input_ids, attention_mask)
-                    # và collator mong đợi list of dicts (features)
                     
                     # Cách tốt nhất là mô phỏng lại đầu ra của collator cho một batch đơn
                     # Tạo các tensor từ các list đã tokenize
@@ -1393,22 +1385,25 @@ class SPPOTrainer(Trainer):
                     print(f"[DEBUG_COMPUTE_LOSS] Rank {_rank_id}: Successfully re-tokenized and reconstructed batch from string.")
                 else:
                     # Nếu không phải là JSON hợp lệ hoặc không có "prompt", vẫn báo lỗi
-                    raise ValueError(f"Rank {_rank_id}: Received raw string input in compute_loss that could not be re-tokenized: {inputs[:200].replace('\n', ' ')}...")
+                    cleaned_inputs_head = inputs[:200].replace('\n', ' ')
+                    raise ValueError(f"Rank {_rank_id}: Received raw string input in compute_loss that could not be re-tokenized: {cleaned_inputs_head}...")
             except json.JSONDecodeError:
                 # Nếu không phải là JSON, thì đây là một chuỗi thô không thể xử lý
-                raise ValueError(f"Rank {_rank_id}: Received raw string input in compute_loss that is not JSON and cannot be processed: {inputs[:200].replace('\n', ' ')}...")
+                cleaned_inputs_head = inputs[:200].replace('\n', ' ')
+                raise ValueError(f"Rank {_rank_id}: Received raw string input in compute_loss that is not JSON and cannot be processed: {cleaned_inputs_head}...")
         elif isinstance(inputs, list) and inputs and isinstance(inputs[0], str):
             # Nếu là list of strings, cũng là lỗi nghiêm trọng
-            raise ValueError(f"Rank {_rank_id}: Received list of raw string inputs in compute_loss. This indicates a critical data pipeline issue. First item: {inputs[0][:200].replace('\n', ' ')}...")
+            cleaned_inputs_head = inputs[0][:200].replace('\n', ' ')
+            raise ValueError(f"Rank {_rank_id}: Received list of raw string inputs in compute_loss. This indicates a critical data pipeline issue. First item: {cleaned_inputs_head}...")
         # --- KẾT THÚC PHẦN SỬA LỖI ---
-    
+
         # Các kiểm tra khác vẫn giữ nguyên
         if not self.use_dpo_data_collator:
             warnings.warn(
                 "compute_loss is only implemented for DPODataCollatorWithPadding, and you passed a datacollator that is different than "
                 "DPODataCollatorWithPadding - you might see unexpected behavior. Alternatively, you can implement your own prediction_step method if you are using a custom data collator"
             )
-    
+
         # Disallow fallback tokenization path to ensure dataset mapping is used
         if (
             isinstance(inputs, dict)
@@ -1424,13 +1419,13 @@ class SPPOTrainer(Trainer):
             raise ValueError(error_message)
             
         compute_loss_context_manager = torch.cuda.amp.autocast if self._peft_has_been_casted_to_bf16 else nullcontext
-    
+
         with compute_loss_context_manager():
             loss, metrics = self.get_batch_loss_metrics(model, inputs, train_eval="train")
-    
+
         # force log the metrics
         self.store_metrics(metrics, train_eval="train")
-    
+
         if return_outputs:
             return (loss, metrics)
         return loss
