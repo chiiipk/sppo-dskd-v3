@@ -1331,109 +1331,109 @@ class SPPOTrainer(Trainer):
 # Trong file /kaggle/working/sppo-dskd-v3/sppo/trainer.py
 # ...
 
-def compute_loss(
-    self,
-    model: Union[PreTrainedModel, nn.Module],
-    inputs: Dict[str, Union[torch.Tensor, Any]],
-    return_outputs=False,
-    num_items_in_batch=None,
-) -> Union[torch.Tensor, Tuple[torch.Tensor, Dict[str, torch.Tensor]]]:
-    # --- DEBUG START: compute_loss ---
-    try:
-        import os as _os
-        _rank_id = _os.environ.get("LOCAL_RANK", "0")
-        print(f"[DEBUG_COMPUTE_LOSS] Rank {_rank_id}: compute_loss received type(inputs)={type(inputs)}")
-        if isinstance(inputs, dict):
-            print(f"[DEBUG_COMPUTE_LOSS] Rank {_rank_id}: compute_loss received keys: {list(inputs.keys())}")
-            for k in ['chosen_input_ids', 'rejected_input_ids', 'prompt_input_ids']:
-                if k in inputs and isinstance(inputs[k], torch.Tensor):
-                    print(f"[DEBUG_COMPUTE_LOSS] Rank {_rank_id}: compute_loss {k} shape={inputs[k].shape}, sample={inputs[k][0, :5].tolist()}")
-        elif isinstance(inputs, str):
-            cleaned_inputs_head = inputs[:120].replace('\n', ' ')
-            print(f"[DEBUG_COMPUTE_LOSS] Rank {_rank_id}: compute_loss string head: {cleaned_inputs_head}")
-        else:
-            print(f"[DEBUG_COMPUTE_LOSS] Rank {_rank_id}: compute_loss unexpected type: {type(inputs)}")
-    except Exception as _e:
-        print(f"[DEBUG_COMPUTE_LOSS] Rank {_rank_id}: inspect failed: {_e}")
-    # --- DEBUG END: compute_loss ---
-
-
-
-    if isinstance(inputs, str):
-        import json
-        # Cố gắng phân tích cú pháp chuỗi nếu nó là JSON (có thể là một ví dụ duy nhất)
+    def compute_loss(
+        self,
+        model: Union[PreTrainedModel, nn.Module],
+        inputs: Dict[str, Union[torch.Tensor, Any]],
+        return_outputs=False,
+        num_items_in_batch=None,
+    ) -> Union[torch.Tensor, Tuple[torch.Tensor, Dict[str, torch.Tensor]]]:
+        # --- DEBUG START: compute_loss ---
         try:
-            parsed_input = json.loads(inputs)
-            if isinstance(parsed_input, dict) and "prompt" in parsed_input:
-                # Nếu nó là một dict hợp lệ, chúng ta sẽ cố gắng tokenize lại nó
-                # Đây là một kịch bản không mong muốn, nhưng cần xử lý
-                print(f"[DEBUG_COMPUTE_LOSS] Rank {_rank_id}: Attempting to re-tokenize raw string input.")
-                # Tạo một dictionary giả để tokenize_row có thể xử lý
-                temp_feature = {
-                    "prompt": parsed_input.get("prompt", ""),
-                    "chosen": parsed_input.get("chosen", ""), # Giả định có thể có chosen/rejected
-                    "rejected": parsed_input.get("rejected", "")
-                }
-                # Gọi tokenize_row để tạo ra một batch giả
-                tokenized_data = self.tokenize_row(temp_feature)
-                # DPODataCollatorWithPadding mong đợi một list các features
-                # Chúng ta cần tạo một batch từ tokenized_data
-                # Đây là một điểm phức tạp vì tokenize_row trả về dict of lists (input_ids, attention_mask)
-                # và collator mong đợi list of dicts (features)
-                
-                # Cách tốt nhất là mô phỏng lại đầu ra của collator cho một batch đơn
-                # Tạo các tensor từ các list đã tokenize
-                reconstructed_batch = {}
-                for k, v in tokenized_data.items():
-                    if isinstance(v, list):
-                        reconstructed_batch[k] = torch.tensor([v], dtype=torch.long, device=model.device)
-                    else: # Ví dụ: chosen_probs
-                        reconstructed_batch[k] = torch.tensor([v], dtype=torch.float, device=model.device)
-                inputs = reconstructed_batch
-                print(f"[DEBUG_COMPUTE_LOSS] Rank {_rank_id}: Successfully re-tokenized and reconstructed batch from string.")
+            import os as _os
+            _rank_id = _os.environ.get("LOCAL_RANK", "0")
+            print(f"[DEBUG_COMPUTE_LOSS] Rank {_rank_id}: compute_loss received type(inputs)={type(inputs)}")
+            if isinstance(inputs, dict):
+                print(f"[DEBUG_COMPUTE_LOSS] Rank {_rank_id}: compute_loss received keys: {list(inputs.keys())}")
+                for k in ['chosen_input_ids', 'rejected_input_ids', 'prompt_input_ids']:
+                    if k in inputs and isinstance(inputs[k], torch.Tensor):
+                        print(f"[DEBUG_COMPUTE_LOSS] Rank {_rank_id}: compute_loss {k} shape={inputs[k].shape}, sample={inputs[k][0, :5].tolist()}")
+            elif isinstance(inputs, str):
+                cleaned_inputs_head = inputs[:120].replace('\n', ' ')
+                print(f"[DEBUG_COMPUTE_LOSS] Rank {_rank_id}: compute_loss string head: {cleaned_inputs_head}")
             else:
-                # Nếu không phải là JSON hợp lệ hoặc không có "prompt", vẫn báo lỗi
-                raise ValueError(f"Rank {_rank_id}: Received raw string input in compute_loss that could not be re-tokenized: {inputs[:200].replace('\n', ' ')}...")
-        except json.JSONDecodeError:
-            # Nếu không phải là JSON, thì đây là một chuỗi thô không thể xử lý
-            raise ValueError(f"Rank {_rank_id}: Received raw string input in compute_loss that is not JSON and cannot be processed: {inputs[:200].replace('\n', ' ')}...")
-    elif isinstance(inputs, list) and inputs and isinstance(inputs[0], str):
-        # Nếu là list of strings, cũng là lỗi nghiêm trọng
-        raise ValueError(f"Rank {_rank_id}: Received list of raw string inputs in compute_loss. This indicates a critical data pipeline issue. First item: {inputs[0][:200].replace('\n', ' ')}...")
-    # --- KẾT THÚC PHẦN SỬA LỖI ---
-
-    # Các kiểm tra khác vẫn giữ nguyên
-    if not self.use_dpo_data_collator:
-        warnings.warn(
-            "compute_loss is only implemented for DPODataCollatorWithPadding, and you passed a datacollator that is different than "
-            "DPODataCollatorWithPadding - you might see unexpected behavior. Alternatively, you can implement your own prediction_step method if you are using a custom data collator"
-        )
-
-    # Disallow fallback tokenization path to ensure dataset mapping is used
-    if (
-        isinstance(inputs, dict)
-        and ("chosen_input_ids" not in inputs or "rejected_input_ids" not in inputs)
-    ):
-        import os as _os
-        _rank_id = _os.environ.get("LOCAL_RANK", "0")
-        error_message = (
-            f"Rank {_rank_id}: Batch missing tokenized fields ('chosen_input_ids'/'rejected_input_ids'). "
-            "Ensure dataset was mapped with tokenize_row. "
-            f"Received keys: {list(inputs.keys())}"
-        )
-        raise ValueError(error_message)
-        
-    compute_loss_context_manager = torch.cuda.amp.autocast if self._peft_has_been_casted_to_bf16 else nullcontext
-
-    with compute_loss_context_manager():
-        loss, metrics = self.get_batch_loss_metrics(model, inputs, train_eval="train")
-
-    # force log the metrics
-    self.store_metrics(metrics, train_eval="train")
-
-    if return_outputs:
-        return (loss, metrics)
-    return loss
+                print(f"[DEBUG_COMPUTE_LOSS] Rank {_rank_id}: compute_loss unexpected type: {type(inputs)}")
+        except Exception as _e:
+            print(f"[DEBUG_COMPUTE_LOSS] Rank {_rank_id}: inspect failed: {_e}")
+        # --- DEBUG END: compute_loss ---
+    
+    
+    
+        if isinstance(inputs, str):
+            import json
+            # Cố gắng phân tích cú pháp chuỗi nếu nó là JSON (có thể là một ví dụ duy nhất)
+            try:
+                parsed_input = json.loads(inputs)
+                if isinstance(parsed_input, dict) and "prompt" in parsed_input:
+                    # Nếu nó là một dict hợp lệ, chúng ta sẽ cố gắng tokenize lại nó
+                    # Đây là một kịch bản không mong muốn, nhưng cần xử lý
+                    print(f"[DEBUG_COMPUTE_LOSS] Rank {_rank_id}: Attempting to re-tokenize raw string input.")
+                    # Tạo một dictionary giả để tokenize_row có thể xử lý
+                    temp_feature = {
+                        "prompt": parsed_input.get("prompt", ""),
+                        "chosen": parsed_input.get("chosen", ""), # Giả định có thể có chosen/rejected
+                        "rejected": parsed_input.get("rejected", "")
+                    }
+                    # Gọi tokenize_row để tạo ra một batch giả
+                    tokenized_data = self.tokenize_row(temp_feature)
+                    # DPODataCollatorWithPadding mong đợi một list các features
+                    # Chúng ta cần tạo một batch từ tokenized_data
+                    # Đây là một điểm phức tạp vì tokenize_row trả về dict of lists (input_ids, attention_mask)
+                    # và collator mong đợi list of dicts (features)
+                    
+                    # Cách tốt nhất là mô phỏng lại đầu ra của collator cho một batch đơn
+                    # Tạo các tensor từ các list đã tokenize
+                    reconstructed_batch = {}
+                    for k, v in tokenized_data.items():
+                        if isinstance(v, list):
+                            reconstructed_batch[k] = torch.tensor([v], dtype=torch.long, device=model.device)
+                        else: # Ví dụ: chosen_probs
+                            reconstructed_batch[k] = torch.tensor([v], dtype=torch.float, device=model.device)
+                    inputs = reconstructed_batch
+                    print(f"[DEBUG_COMPUTE_LOSS] Rank {_rank_id}: Successfully re-tokenized and reconstructed batch from string.")
+                else:
+                    # Nếu không phải là JSON hợp lệ hoặc không có "prompt", vẫn báo lỗi
+                    raise ValueError(f"Rank {_rank_id}: Received raw string input in compute_loss that could not be re-tokenized: {inputs[:200].replace('\n', ' ')}...")
+            except json.JSONDecodeError:
+                # Nếu không phải là JSON, thì đây là một chuỗi thô không thể xử lý
+                raise ValueError(f"Rank {_rank_id}: Received raw string input in compute_loss that is not JSON and cannot be processed: {inputs[:200].replace('\n', ' ')}...")
+        elif isinstance(inputs, list) and inputs and isinstance(inputs[0], str):
+            # Nếu là list of strings, cũng là lỗi nghiêm trọng
+            raise ValueError(f"Rank {_rank_id}: Received list of raw string inputs in compute_loss. This indicates a critical data pipeline issue. First item: {inputs[0][:200].replace('\n', ' ')}...")
+        # --- KẾT THÚC PHẦN SỬA LỖI ---
+    
+        # Các kiểm tra khác vẫn giữ nguyên
+        if not self.use_dpo_data_collator:
+            warnings.warn(
+                "compute_loss is only implemented for DPODataCollatorWithPadding, and you passed a datacollator that is different than "
+                "DPODataCollatorWithPadding - you might see unexpected behavior. Alternatively, you can implement your own prediction_step method if you are using a custom data collator"
+            )
+    
+        # Disallow fallback tokenization path to ensure dataset mapping is used
+        if (
+            isinstance(inputs, dict)
+            and ("chosen_input_ids" not in inputs or "rejected_input_ids" not in inputs)
+        ):
+            import os as _os
+            _rank_id = _os.environ.get("LOCAL_RANK", "0")
+            error_message = (
+                f"Rank {_rank_id}: Batch missing tokenized fields ('chosen_input_ids'/'rejected_input_ids'). "
+                "Ensure dataset was mapped with tokenize_row. "
+                f"Received keys: {list(inputs.keys())}"
+            )
+            raise ValueError(error_message)
+            
+        compute_loss_context_manager = torch.cuda.amp.autocast if self._peft_has_been_casted_to_bf16 else nullcontext
+    
+        with compute_loss_context_manager():
+            loss, metrics = self.get_batch_loss_metrics(model, inputs, train_eval="train")
+    
+        # force log the metrics
+        self.store_metrics(metrics, train_eval="train")
+    
+        if return_outputs:
+            return (loss, metrics)
+        return loss
 
     def training_step(self, model: nn.Module, inputs: Dict[str, Union[torch.Tensor, Any]], num_items_in_batch: Optional[int] = None) -> torch.Tensor:
         """
