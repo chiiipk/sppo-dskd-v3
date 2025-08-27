@@ -60,7 +60,7 @@ if is_deepspeed_available:
 
 
 class SPPOTrainer(Trainer):
-    r"""
+    """
     Initialize SPPOTrainer.
 
     Args:
