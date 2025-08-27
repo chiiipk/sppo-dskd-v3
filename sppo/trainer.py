@@ -380,7 +380,53 @@ class SPPOTrainer(Trainer):
         self.max_target_length = max_target_length
         self._tokenizer = tokenizer
         self.precompute_ref_log_probs = precompute_ref_log_probs
+    def training_step(self, model: nn.Module, inputs: Dict[str, Union[torch.Tensor, Any]], num_items_in_batch: Optional[int] = None) -> torch.Tensor:
+        """
+        Perform a training step on a batch of inputs.
+        Overridden to add debug prints before calling compute_loss.
+        """
+        self.model.train()
+        inputs = self._prepare_inputs(inputs) # Đảm bảo inputs được chuẩn bị
 
+        # THÊM ĐOẠN CODE DEBUG NÀY VÀO ĐÂY
+        try:
+            import os as _os
+            _rank_id = _os.environ.get("LOCAL_RANK", "0")
+            print(f"[DEBUG_SPPO_TRAINING_STEP] Rank {_rank_id}: Inputs to compute_loss type={type(inputs)}")
+            if isinstance(inputs, dict):
+                print(f"[DEBUG_SPPO_TRAINING_STEP] Rank {_rank_id}: Inputs to compute_loss keys={list(inputs.keys())}")
+                # In một vài giá trị mẫu nếu là tensor để kiểm tra
+                for k in ['chosen_input_ids', 'rejected_input_ids', 'prompt_input_ids']:
+                    if k in inputs and isinstance(inputs[k], torch.Tensor):
+                        print(f"[DEBUG_SPPO_TRAINING_STEP] Rank {_rank_id}: Inputs to compute_loss {k} shape={inputs[k].shape}, sample={inputs[k][0, :5].tolist()}")
+            elif isinstance(inputs, str):
+                cleaned_inputs_head = inputs[:120].replace('\n', ' ')
+                print(f"[DEBUG_SPPO_TRAINING_STEP] Rank {_rank_id}: Inputs to compute_loss string head={cleaned_inputs_head}")
+            else:
+                print(f"[DEBUG_SPPO_TRAINING_STEP] Rank {_rank_id}: Inputs to compute_loss unexpected type={type(inputs)}")
+        except Exception as _e:
+            print(f"[DEBUG_SPPO_TRAINING_STEP] Rank {_rank_id}: Failed to inspect inputs in training_step: {_e}")
+        # KẾT THÚC ĐOẠN CODE DEBUG
+
+        # Gọi phương thức compute_loss của SPPOTrainer
+        with self.accelerator.accumulate(model):
+            with self.autocast_smart_context_manager():
+                loss = self.compute_loss(model, inputs, num_items_in_batch=num_items_in_batch)
+
+            if self.args.n_gpu > 1:
+                loss = loss.mean()
+
+            if self.args.gradient_accumulation_steps > 1 and not self.deepspeed:
+                loss = loss / self.args.gradient_accumulation_steps
+
+            if self.do_grad_scaling:
+                self.scaler.scale(loss).backward()
+            elif self.deepspeed:
+                loss.backward()
+            else:
+                loss.backward()
+
+            return loss.detach()
         #Tokenize datasets upfront for DPODataCollatorWithPadding
         def _map_dataset(ds: Dataset) -> Dataset:
             if ds is None:
