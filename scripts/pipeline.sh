@@ -104,7 +104,7 @@ python3 /kaggle/working/sppo-dskd-v3/scripts/update_dataset.py \
     --config "$new_config_file" >"$log_file.log"
 
 echo "logging to $log_file.log"
-
+export PYTHONPATH="/kaggle/working/sppo-dskd-v3/sppo:$PYTHONPATH"
 ACCELERATE_LOG_LEVEL=info accelerate launch \
     --config_file /kaggle/working/sppo-dskd-v3/recipes/accelerate_configs/deepspeed_zero3.yaml \
     --main_process_port 2930 \
