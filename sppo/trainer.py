@@ -477,6 +477,8 @@ class SPPOTrainer(Trainer):
         if self._tokenizer.pad_token_id is None:
             self._tokenizer.pad_token_id = self._tokenizer.eos_token_id
         # Initialize Trainer with the data collator (DPODataCollatorWithPadding by default)
+        if args.dataloader_num_workers != 0:
+            args.dataloader_num_workers = 0
         super().__init__(
             model=model,
             args=args,
