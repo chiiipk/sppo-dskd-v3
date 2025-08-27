@@ -325,39 +325,47 @@ class SPPOTrainer(Trainer):
         # Wrap data_collator to debug incoming feature types (rank 0 only)
         try:
             import os as _os
-            _rank0 = _os.environ.get("LOCAL_RANK", "0") == "0"
+            _rank_id = _os.environ.get("LOCAL_RANK", "0")
         except Exception:
-            _rank0 = True
+            _rank_id = "unknown"
+    
         class _DebugCollator:
             def __init__(self, inner, enable, print_batch_size):
                 self.inner = inner
-                self.enable = enable
+                self.enable = enable # Giữ lại enable để kiểm soát nếu cần, nhưng tạm thời sẽ in luôn
                 self.print_batch_size = print_batch_size
-                self._printed = False
+                self._printed_call = False
+                self._printed_return = False
+    
             def __call__(self, features):
-                # Print only on first real DataLoader call (batch size match), skip manual sanity calls
-                should_print = False
+                # Luôn in thông tin đầu vào của collator
                 try:
-                    if isinstance(features, list):
-                        if self.print_batch_size is not None and len(features) == self.print_batch_size:
-                            should_print = True
-                        # Also print if first element is a str (indicates a bug)
-                        if features and isinstance(features[0], str):
-                            should_print = True
-                except Exception:
-                    should_print = True
-                if self.enable and not self._printed and should_print:
-                    try:
-                        t_first = type(features[0]) if isinstance(features, list) and features else type(features)
-                        print(f"[DEBUG] collate called: type(features)={type(features)}, first={t_first}")
+                    t_features = type(features)
+                    t_first_feature = type(features[0]) if isinstance(features, list) and features else None
+                    if not self._printed_call: # Chỉ in lần đầu tiên để tránh spam log
+                        print(f"[DEBUG_COLLATOR] Rank {_rank_id}: collate called. type(features)={t_features}, type(first_feature)={t_first_feature}")
                         if isinstance(features, list) and features and isinstance(features[0], dict):
-                            print(f"[DEBUG] collate first keys: {list(features[0].keys())}")
-                    except Exception as _e:
-                        print(f"[DEBUG] collate inspect failed: {_e}")
-                    self._printed = True
-                return self.inner(features)
-        data_collator = _DebugCollator(data_collator, _rank0, getattr(args, "per_device_train_batch_size", None))
-
+                            print(f"[DEBUG_COLLATOR] Rank {_rank_id}: collate first keys: {list(features[0].keys())}")
+                        self._printed_call = True
+                except Exception as _e:
+                    print(f"[DEBUG_COLLATOR] Rank {_rank_id}: collate inspect input failed: {_e}")
+    
+                result = self.inner(features)
+    
+                # Luôn in thông tin đầu ra của collator
+                try:
+                    t_result = type(result)
+                    t_first_result_item = type(list(result.values())[0]) if isinstance(result, dict) and result else None
+                    if not self._printed_return: # Chỉ in lần đầu tiên để tránh spam log
+                        print(f"[DEBUG_COLLATOR] Rank {_rank_id}: collate returned. type(result)={t_result}, type(first_result_item)={t_first_result_item}")
+                        if isinstance(result, dict):
+                            print(f"[DEBUG_COLLATOR] Rank {_rank_id}: collate returned keys: {list(result.keys())}")
+                        self._printed_return = True
+                except Exception as _e:
+                    print(f"[DEBUG_COLLATOR] Rank {_rank_id}: collate return inspect failed: {_e}")
+    
+                return result
+        data_collator = _DebugCollator(data_collator, True, getattr(args, "per_device_train_batch_size", None))
         if disable_dropout:
             disable_dropout_in_model(model)
             if self.ref_model is not None:
