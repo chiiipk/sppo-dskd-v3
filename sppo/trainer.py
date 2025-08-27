@@ -923,7 +923,20 @@ class SPPOTrainer(Trainer):
             A dictionary containing the concatenated inputs under the key 'concatenated_input_ids'.
         """
         concatenated_batch = {}
-
+        try:
+            import os as _os
+            _rank_id = _os.environ.get("LOCAL_RANK", "0")
+            # In trên tất cả các rank để đảm bảo không bỏ sót thông tin
+            print(f"[DEBUG_CONCAT_INPUTS] Rank {_rank_id}: concatenated_inputs received type(batch)={type(batch)}")
+            if isinstance(batch, dict):
+                print(f"[DEBUG_CONCAT_INPUTS] Rank {_rank_id}: concatenated_inputs received keys: {list(batch.keys())}")
+            elif isinstance(batch, str):
+                print(f"[DEBUG_CONCAT_INPUTS] Rank {_rank_id}: concatenated_inputs received string head: {batch[:120].replace('\n', ' ')}")
+            else:
+                print(f"[DEBUG_CONCAT_INPUTS] Rank {_rank_id}: concatenated_inputs received unexpected type: {type(batch)}")
+        except Exception as _e:
+            print(f"[DEBUG_CONCAT_INPUTS] Rank {_rank_id}: inspect failed: {_e}")
+        # KẾT THÚC ĐOẠN CODE DEBUG
         # Check if batch is a string (data collator issue)
         if isinstance(batch, str):
             print(f"ERROR: Batch is a string instead of a dictionary!")
