@@ -373,27 +373,27 @@ class SPPOTrainer(Trainer):
         self._tokenizer = tokenizer
         self.precompute_ref_log_probs = precompute_ref_log_probs
 
-        # Tokenize datasets upfront for DPODataCollatorWithPadding
-        # def _map_dataset(ds: Dataset) -> Dataset:
-        #     if ds is None:
-        #         return ds
-        #     # Remove raw text columns after tokenization to reduce memory
-        #     try:
-        #         column_names = list(ds.features)
-        #     except Exception:
-        #         column_names = ds.column_names
-        #     # Keep all original columns to avoid accidentally dropping probability annotations
-        #     return ds.map(
-        #         lambda x: self.tokenize_row(x),
-        #         desc="Tokenizing dataset for DPO",
-        #     )
+        Tokenize datasets upfront for DPODataCollatorWithPadding
+        def _map_dataset(ds: Dataset) -> Dataset:
+            if ds is None:
+                return ds
+            # Remove raw text columns after tokenization to reduce memory
+            try:
+                column_names = list(ds.features)
+            except Exception:
+                column_names = ds.column_names
+            # Keep all original columns to avoid accidentally dropping probability annotations
+            return ds.map(
+                lambda x: self.tokenize_row(x),
+                desc="Tokenizing dataset for DPO",
+            )
 
-        # if train_dataset is not None:
-        #     train_dataset = _map_dataset(train_dataset)
-        # if isinstance(eval_dataset, dict):
-        #     eval_dataset = {k: _map_dataset(v) for k, v in eval_dataset.items()}
-        # elif eval_dataset is not None:
-        #     eval_dataset = _map_dataset(eval_dataset)
+        if train_dataset is not None:
+            train_dataset = _map_dataset(train_dataset)
+        if isinstance(eval_dataset, dict):
+            eval_dataset = {k: _map_dataset(v) for k, v in eval_dataset.items()}
+        elif eval_dataset is not None:
+            eval_dataset = _map_dataset(eval_dataset)
 
         # Debug: inspect mapped datasets to ensure probability fields are present (rank 0 only)
         try:
