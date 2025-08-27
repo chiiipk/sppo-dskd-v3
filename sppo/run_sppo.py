@@ -1,3 +1,4 @@
+
 import logging
 import random
 import sys
@@ -24,6 +25,9 @@ from alignment import (
 
 from peft import PeftConfig, PeftModel
 from trainer import SPPOTrainer
+import trainer
+print("[DEBUG] Using trainer from:", trainer.__file__)
+
 
 logger = logging.getLogger(__name__)
 
