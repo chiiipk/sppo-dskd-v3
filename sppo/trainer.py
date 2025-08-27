@@ -377,7 +377,7 @@ class SPPOTrainer(Trainer):
         def _map_dataset(ds: Dataset) -> Dataset:
             if ds is None:
                 return ds
-            # Remove raw text columns after tokenization to reduce memory
+            original_columns = ds.column_names
             try:
                 column_names = list(ds.features)
             except Exception:
@@ -386,6 +386,7 @@ class SPPOTrainer(Trainer):
             return ds.map(
                 lambda x: self.tokenize_row(x),
                 desc="Tokenizing dataset for DPO",
+                remove_columns=original_columns
             )
 
         if train_dataset is not None:
