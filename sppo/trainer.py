@@ -58,9 +58,8 @@ if is_deepspeed_available:
 #     return feature
 
 
-
 class SPPOTrainer(Trainer):
-    """
+    r"""
     Initialize SPPOTrainer.
 
     Args:
@@ -328,15 +327,13 @@ class SPPOTrainer(Trainer):
             _rank_id = _os.environ.get("LOCAL_RANK", "0")
         except Exception:
             _rank_id = "unknown"
-    
         class _DebugCollator:
             def __init__(self, inner, enable, print_batch_size):
                 self.inner = inner
-                self.enable = enable # Giữ lại enable để kiểm soát nếu cần, nhưng tạm thời sẽ in luôn
+                self.enable = enable
                 self.print_batch_size = print_batch_size
                 self._printed_call = False
                 self._printed_return = False
-    
             def __call__(self, features):
                 # Luôn in thông tin đầu vào của collator
                 try:
@@ -349,9 +346,9 @@ class SPPOTrainer(Trainer):
                         self._printed_call = True
                 except Exception as _e:
                     print(f"[DEBUG_COLLATOR] Rank {_rank_id}: collate inspect input failed: {_e}")
-    
+
                 result = self.inner(features)
-    
+
                 # Luôn in thông tin đầu ra của collator
                 try:
                     t_result = type(result)
@@ -363,9 +360,10 @@ class SPPOTrainer(Trainer):
                         self._printed_return = True
                 except Exception as _e:
                     print(f"[DEBUG_COLLATOR] Rank {_rank_id}: collate return inspect failed: {_e}")
-    
+
                 return result
         data_collator = _DebugCollator(data_collator, True, getattr(args, "per_device_train_batch_size", None))
+
         if disable_dropout:
             disable_dropout_in_model(model)
             if self.ref_model is not None:
@@ -380,53 +378,7 @@ class SPPOTrainer(Trainer):
         self.max_target_length = max_target_length
         self._tokenizer = tokenizer
         self.precompute_ref_log_probs = precompute_ref_log_probs
-    def training_step(self, model: nn.Module, inputs: Dict[str, Union[torch.Tensor, Any]], num_items_in_batch: Optional[int] = None) -> torch.Tensor:
-        """
-        Perform a training step on a batch of inputs.
-        Overridden to add debug prints before calling compute_loss.
-        """
-        self.model.train()
-        inputs = self._prepare_inputs(inputs) # Đảm bảo inputs được chuẩn bị
 
-        # THÊM ĐOẠN CODE DEBUG NÀY VÀO ĐÂY
-        try:
-            import os as _os
-            _rank_id = _os.environ.get("LOCAL_RANK", "0")
-            print(f"[DEBUG_SPPO_TRAINING_STEP] Rank {_rank_id}: Inputs to compute_loss type={type(inputs)}")
-            if isinstance(inputs, dict):
-                print(f"[DEBUG_SPPO_TRAINING_STEP] Rank {_rank_id}: Inputs to compute_loss keys={list(inputs.keys())}")
-                # In một vài giá trị mẫu nếu là tensor để kiểm tra
-                for k in ['chosen_input_ids', 'rejected_input_ids', 'prompt_input_ids']:
-                    if k in inputs and isinstance(inputs[k], torch.Tensor):
-                        print(f"[DEBUG_SPPO_TRAINING_STEP] Rank {_rank_id}: Inputs to compute_loss {k} shape={inputs[k].shape}, sample={inputs[k][0, :5].tolist()}")
-            elif isinstance(inputs, str):
-                cleaned_inputs_head = inputs[:120].replace('\n', ' ')
-                print(f"[DEBUG_SPPO_TRAINING_STEP] Rank {_rank_id}: Inputs to compute_loss string head={cleaned_inputs_head}")
-            else:
-                print(f"[DEBUG_SPPO_TRAINING_STEP] Rank {_rank_id}: Inputs to compute_loss unexpected type={type(inputs)}")
-        except Exception as _e:
-            print(f"[DEBUG_SPPO_TRAINING_STEP] Rank {_rank_id}: Failed to inspect inputs in training_step: {_e}")
-        # KẾT THÚC ĐOẠN CODE DEBUG
-
-        # Gọi phương thức compute_loss của SPPOTrainer
-        with self.accelerator.accumulate(model):
-            with self.autocast_smart_context_manager():
-                loss = self.compute_loss(model, inputs, num_items_in_batch=num_items_in_batch)
-
-            if self.args.n_gpu > 1:
-                loss = loss.mean()
-
-            if self.args.gradient_accumulation_steps > 1 and not self.deepspeed:
-                loss = loss / self.args.gradient_accumulation_steps
-
-            if self.do_grad_scaling:
-                self.scaler.scale(loss).backward()
-            elif self.deepspeed:
-                loss.backward()
-            else:
-                loss.backward()
-
-            return loss.detach()
         #Tokenize datasets upfront for DPODataCollatorWithPadding
         def _map_dataset(ds: Dataset) -> Dataset:
             if ds is None:
@@ -968,24 +920,23 @@ class SPPOTrainer(Trainer):
         Returns:
             A dictionary containing the concatenated inputs under the key 'concatenated_input_ids'.
         """
-        concatenated_batch = {}
-        # THÊM ĐOẠN CODE DEBUG NÀY VÀO ĐÂY, NGAY SAU DÒNG "def concatenated_inputs(...):"
+        # --- DEBUG START: concatenated_inputs ---
         try:
             import os as _os
             _rank_id = _os.environ.get("LOCAL_RANK", "0")
-            # In trên tất cả các rank để đảm bảo không bỏ sót thông tin
             print(f"[DEBUG_CONCAT_INPUTS] Rank {_rank_id}: concatenated_inputs received type(batch)={type(batch)}")
             if isinstance(batch, dict):
                 print(f"[DEBUG_CONCAT_INPUTS] Rank {_rank_id}: concatenated_inputs received keys: {list(batch.keys())}")
             elif isinstance(batch, str):
-                # Sửa lỗi cú pháp f-string ở đây
                 cleaned_batch_head = batch[:120].replace('\n', ' ')
                 print(f"[DEBUG_CONCAT_INPUTS] Rank {_rank_id}: concatenated_inputs received string head: {cleaned_batch_head}")
             else:
                 print(f"[DEBUG_CONCAT_INPUTS] Rank {_rank_id}: concatenated_inputs received unexpected type: {type(batch)}")
         except Exception as _e:
             print(f"[DEBUG_CONCAT_INPUTS] Rank {_rank_id}: inspect failed: {_e}")
-        # KẾT THÚC ĐOẠN CODE DEBUG
+        # --- DEBUG END: concatenated_inputs ---
+
+        concatenated_batch = {}
 
         # Check if batch is a string (data collator issue)
         if isinstance(batch, str):
@@ -1193,9 +1144,22 @@ class SPPOTrainer(Trainer):
 
         We do this to avoid doing two forward passes, because it's faster for FSDP.
         """
-        # Debug: Check batch type before concatenated_inputs
-        # Debug prints removed
-            
+        # --- DEBUG START: concatenated_forward ---
+        try:
+            import os as _os
+            _rank_id = _os.environ.get("LOCAL_RANK", "0")
+            print(f"[DEBUG_CONCAT_FORWARD] Rank {_rank_id}: concatenated_forward received type(batch)={type(batch)}")
+            if isinstance(batch, dict):
+                print(f"[DEBUG_CONCAT_FORWARD] Rank {_rank_id}: concatenated_forward received keys: {list(batch.keys())}")
+            elif isinstance(batch, str):
+                cleaned_batch_head = batch[:120].replace('\n', ' ')
+                print(f"[DEBUG_CONCAT_FORWARD] Rank {_rank_id}: concatenated_forward received string head: {cleaned_batch_head}")
+            else:
+                print(f"[DEBUG_CONCAT_FORWARD] Rank {_rank_id}: concatenated_forward received unexpected type: {type(batch)}")
+        except Exception as _e:
+            print(f"[DEBUG_CONCAT_FORWARD] Rank {_rank_id}: inspect failed: {_e}")
+        # --- DEBUG END: concatenated_forward ---
+
         concatenated_batch = self.concatenated_inputs(
             batch,
             is_encoder_decoder=self.is_encoder_decoder,
@@ -1242,9 +1206,22 @@ class SPPOTrainer(Trainer):
         train_eval: Literal["train", "eval"] = "train",
     ):
         """Compute the SPPO loss and other metrics for the given batch of inputs for train or test."""
-        # Debug: Check batch type in get_batch_loss_metrics
-        # Debug prints removed
-            
+        # --- DEBUG START: get_batch_loss_metrics ---
+        try:
+            import os as _os
+            _rank_id = _os.environ.get("LOCAL_RANK", "0")
+            print(f"[DEBUG_GET_BATCH_LOSS] Rank {_rank_id}: get_batch_loss_metrics received type(batch)={type(batch)}")
+            if isinstance(batch, dict):
+                print(f"[DEBUG_GET_BATCH_LOSS] Rank {_rank_id}: get_batch_loss_metrics received keys: {list(batch.keys())}")
+            elif isinstance(batch, str):
+                cleaned_batch_head = batch[:120].replace('\n', ' ')
+                print(f"[DEBUG_GET_BATCH_LOSS] Rank {_rank_id}: get_batch_loss_metrics received string head: {cleaned_batch_head}")
+            else:
+                print(f"[DEBUG_GET_BATCH_LOSS] Rank {_rank_id}: get_batch_loss_metrics received unexpected type: {type(batch)}")
+        except Exception as _e:
+            print(f"[DEBUG_GET_BATCH_LOSS] Rank {_rank_id}: inspect failed: {_e}")
+        # --- DEBUG END: get_batch_loss_metrics ---
+
         metrics = {}
 
         # Disallow fallback tokenization path to ensure dataset mapping is used
@@ -1358,6 +1335,25 @@ class SPPOTrainer(Trainer):
         return_outputs=False,
         num_items_in_batch=None,
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, Dict[str, torch.Tensor]]]:
+        # --- DEBUG START: compute_loss ---
+        try:
+            import os as _os
+            _rank_id = _os.environ.get("LOCAL_RANK", "0")
+            print(f"[DEBUG_COMPUTE_LOSS] Rank {_rank_id}: compute_loss received type(inputs)={type(inputs)}")
+            if isinstance(inputs, dict):
+                print(f"[DEBUG_COMPUTE_LOSS] Rank {_rank_id}: compute_loss received keys: {list(inputs.keys())}")
+                for k in ['chosen_input_ids', 'rejected_input_ids', 'prompt_input_ids']:
+                    if k in inputs and isinstance(inputs[k], torch.Tensor):
+                        print(f"[DEBUG_COMPUTE_LOSS] Rank {_rank_id}: compute_loss {k} shape={inputs[k].shape}, sample={inputs[k][0, :5].tolist()}")
+            elif isinstance(inputs, str):
+                cleaned_inputs_head = inputs[:120].replace('\n', ' ')
+                print(f"[DEBUG_COMPUTE_LOSS] Rank {_rank_id}: compute_loss string head: {cleaned_inputs_head}")
+            else:
+                print(f"[DEBUG_COMPUTE_LOSS] Rank {_rank_id}: compute_loss unexpected type: {type(inputs)}")
+        except Exception as _e:
+            print(f"[DEBUG_COMPUTE_LOSS] Rank {_rank_id}: inspect failed: {_e}")
+        # --- DEBUG END: compute_loss ---
+
         # Debug: Check inputs keys on rank 0 when missing expected fields
         try:
             import os
@@ -1399,6 +1395,53 @@ class SPPOTrainer(Trainer):
             return (loss, metrics)
         return loss
 
+    def training_step(self, model: nn.Module, inputs: Dict[str, Union[torch.Tensor, Any]], num_items_in_batch: Optional[int] = None) -> torch.Tensor:
+        """
+        Perform a training step on a batch of inputs.
+        Overridden to add debug prints before calling compute_loss.
+        """
+        self.model.train()
+        inputs = self._prepare_inputs(inputs) # Đảm bảo inputs được chuẩn bị
+
+        # --- DEBUG START: training_step ---
+        try:
+            import os as _os
+            _rank_id = _os.environ.get("LOCAL_RANK", "0")
+            print(f"[DEBUG_SPPO_TRAINING_STEP] Rank {_rank_id}: Inputs to compute_loss type={type(inputs)}")
+            if isinstance(inputs, dict):
+                print(f"[DEBUG_SPPO_TRAINING_STEP] Rank {_rank_id}: Inputs to compute_loss keys={list(inputs.keys())}")
+                for k in ['chosen_input_ids', 'rejected_input_ids', 'prompt_input_ids']:
+                    if k in inputs and isinstance(inputs[k], torch.Tensor):
+                        print(f"[DEBUG_SPPO_TRAINING_STEP] Rank {_rank_id}: Inputs to compute_loss {k} shape={inputs[k].shape}, sample={inputs[k][0, :5].tolist()}")
+            elif isinstance(inputs, str):
+                cleaned_inputs_head = inputs[:120].replace('\n', ' ')
+                print(f"[DEBUG_SPPO_TRAINING_STEP] Rank {_rank_id}: Inputs to compute_loss string head={cleaned_inputs_head}")
+            else:
+                print(f"[DEBUG_SPPO_TRAINING_STEP] Rank {_rank_id}: Inputs to compute_loss unexpected type={type(inputs)}")
+        except Exception as _e:
+            print(f"[DEBUG_SPPO_TRAINING_STEP] Rank {_rank_id}: Failed to inspect inputs in training_step: {_e}")
+        # --- DEBUG END: training_step ---
+
+        # Gọi phương thức compute_loss của SPPOTrainer
+        with self.accelerator.accumulate(model):
+            with self.autocast_smart_context_manager():
+                loss = self.compute_loss(model, inputs, num_items_in_batch=num_items_in_batch)
+
+            if self.args.n_gpu > 1:
+                loss = loss.mean()
+
+            if self.args.gradient_accumulation_steps > 1 and not self.deepspeed:
+                loss = loss / self.args.gradient_accumulation_steps
+
+            if self.do_grad_scaling:
+                self.scaler.scale(loss).backward()
+            elif self.deepspeed:
+                loss.backward()
+            else:
+                loss.backward()
+
+            return loss.detach()
+
     def get_batch_samples(self, epoch_iterator, num_batches, device) -> Tuple[str, str]:
         """Generate samples from the model and reference model for the given batch of inputs."""
         
@@ -1432,8 +1475,8 @@ class SPPOTrainer(Trainer):
             rejected_tokens["input_ids"] = [self._tokenizer.bos_token_id] + rejected_tokens["input_ids"]
             
             prompt_tokens["prompt_attention_mask"] = [1] + prompt_tokens["prompt_attention_mask"]
-            chosen_tokens["attention_mask"] = [1] + chosen_tokens["attention_mask"]
-            rejected_tokens["attention_mask"] = [1] + rejected_tokens["attention_mask"]
+            chosen_tokens["attention_mask"] = [1] + chosen_tokens["attention_attention_mask"]
+            rejected_tokens["attention_mask"] = [1] + rejected_tokens["attention_attention_mask"]
             
             # Add EOS token
             chosen_tokens["input_ids"].append(self._tokenizer.eos_token_id)
