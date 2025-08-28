@@ -368,43 +368,6 @@ def main_inner(model_args, data_args, training_args):
         ],
     )
 
-    # Define a strict collator that refuses to operate on non-dictionary batches
-    class DictOnlyCollator:
-        """Collator that accepts only a list of dictionaries and stacks list values into tensors.
-
-        If the incoming batch is not a list of dicts, this will raise an error to
-        surface potential data formatting issues early.  It also converts Python
-        lists into ``torch.Tensor`` on the fly when necessary.
-        """
-
-        def __call__(self, features):
-            # Validate input batch structure
-            if not isinstance(features, list) or not features:
-                raise ValueError(
-                    f"Collator expected a non-empty list of dicts, got {type(features)}"
-                )
-            if not isinstance(features[0], dict):
-                raise ValueError(
-                    f"Collator expected list elements to be dicts, got {type(features[0])}"
-                )
-
-            batch = {}
-            keys = features[0].keys()
-            for k in keys:
-                # Collect all values for this key across the batch
-                vals = [f[k] for f in features]
-                # If already tensors, stack them
-                if torch.is_tensor(vals[0]):
-                    batch[k] = torch.stack(vals)
-                # If list of ints, convert to tensor
-                elif isinstance(vals[0], list):
-                    batch[k] = torch.tensor(vals, dtype=torch.long)
-                else:
-                    # For any other type, keep as-is in a list
-                    batch[k] = vals
-            return batch
-
-    data_collator = DictOnlyCollator()
 
     # Load the actual model and reference model (if any)
     model, ref_model, model_kwargs, ref_model_kwargs = setup_model(model_args, training_args)
@@ -428,7 +391,11 @@ def main_inner(model_args, data_args, training_args):
         max_prompt_length=training_args.max_prompt_length,
         peft_config=get_peft_config(model_args),
         loss_type=training_args.loss_type,
-        data_collator=data_collator,
+        # Do not pass a custom data_collator here.  Leaving data_collator as None
+        # allows the SPPOTrainer to construct a DPODataCollatorWithPadding which
+        # properly pads variable-length sequences.  Passing our own collator
+        # without padding caused runtime errors when stacking tensors of
+        # different lengths.
     )
 
     # Use the tokenized dataset for training and also track the original raw
