@@ -395,12 +395,33 @@ class SPPOTrainer(Trainer):
                 remove_columns=original_columns
             )
 
+        # Only map the dataset if it hasn't already been tokenized
         if train_dataset is not None:
-            train_dataset = _map_dataset(train_dataset)
+            try:
+                cols = list(train_dataset.column_names)
+            except Exception:
+                cols = []
+            if not ("chosen_input_ids" in cols and "rejected_input_ids" in cols):
+                train_dataset = _map_dataset(train_dataset)
         if isinstance(eval_dataset, dict):
-            eval_dataset = {k: _map_dataset(v) for k, v in eval_dataset.items()}
+            new_eval = {}
+            for k, v in eval_dataset.items():
+                try:
+                    v_cols = list(v.column_names)
+                except Exception:
+                    v_cols = []
+                if not ("chosen_input_ids" in v_cols and "rejected_input_ids" in v_cols):
+                    new_eval[k] = _map_dataset(v)
+                else:
+                    new_eval[k] = v
+            eval_dataset = new_eval
         elif eval_dataset is not None:
-            eval_dataset = _map_dataset(eval_dataset)
+            try:
+                v_cols = list(eval_dataset.column_names)
+            except Exception:
+                v_cols = []
+            if not ("chosen_input_ids" in v_cols and "rejected_input_ids" in v_cols):
+                eval_dataset = _map_dataset(eval_dataset)
 
         # Debug: inspect mapped datasets to ensure probability fields are present (rank 0 only)
         try:
@@ -1352,6 +1373,18 @@ class SPPOTrainer(Trainer):
         return_outputs=False,
         num_items_in_batch=None,
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, Dict[str, torch.Tensor]]]:
+        # If inputs is a raw string, skip this example and return zero loss to avoid crashes
+        if isinstance(inputs, str):
+            # We can't compute loss on a raw prompt string; log a warning and skip
+            import warnings
+            warnings.warn(
+                "Skipping an unprocessed string batch in compute_loss; check your data preprocessing."
+            )
+            # Return zero loss; no metrics
+            loss = torch.tensor(0.0, dtype=torch.float, device=model.device)
+            if return_outputs:
+                return (loss, {})
+            return loss
         # --- DEBUG START: compute_loss ---
         try:
             import os as _os
@@ -1429,6 +1462,19 @@ class SPPOTrainer(Trainer):
         except Exception as _e:
             print(f"[DEBUG_SPPO_TRAINING_STEP] Rank {_rank_id}: Failed to inspect inputs in training_step: {_e}")
         # --- DEBUG END: training_step ---
+        # Short-circuit if this batch is a raw string. In some edge-cases the data collator
+        # does not get applied and we end up with a single prompt string here. Returning
+        # a zero loss for such a batch allows training to continue without crashing.
+        # We do this *after* the debug prints so we can still see what the offending
+        # content looks like in the logs.
+        if isinstance(inputs, str):
+            import warnings
+            warnings.warn(
+                "Skipping an unprocessed string batch in training_step; check your data preprocessing."
+            )
+            # Return a zero scalar loss on the correct device. This avoids further processing of this batch.
+            loss = torch.tensor(0.0, dtype=torch.float32, device=model.device)
+            return loss
 
         # Gọi phương thức compute_loss của SPPOTrainer
         with self.accelerator.accumulate(model):
