@@ -215,6 +215,14 @@ def main_inner(model_args, data_args, training_args):
 
     data_args.truncation_side = "left"
     tokenizer = get_tokenizer(model_args, data_args)
+
+    # Some models (e.g. GPT-2) do not have a pad token defined.  The
+    # DPODataCollatorWithPadding relies on pad_token_id when constructing
+    # batches, so we assign the end-of-sequence token as the pad token
+    # if none is present.  Without this, collators may treat sequences of
+    # different lengths as strings or lists, triggering downstream errors.
+    if tokenizer.pad_token_id is None:
+        tokenizer.pad_token_id = tokenizer.eos_token_id
     raw_datasets = load_and_process_datasets(data_args, tokenizer)
 
     # -------------------------------------------------------------------------
@@ -338,6 +346,66 @@ def main_inner(model_args, data_args, training_args):
         desc="Tokenizing dataset for SPPOTrainer"
     )
 
+    # ---------------------------------------------------------------------
+    # Ensure each feature is converted to a PyTorch tensor.  HuggingFace
+    # datasets by default return Python lists for sequence features which can
+    # sometimes be treated as strings by generic data collators.  Setting
+    # the format to ``torch`` explicitly here ensures that every item in the
+    # dataset yields a dictionary of torch tensors.  This, together with
+    # the custom collator below, prevents the infamous "Batch is a string"
+    # failure during training.
+    tokenized_train = tokenized_train.with_format(
+        type="torch",
+        columns=[
+            "chosen_input_ids",
+            "chosen_attention_mask",
+            "chosen_labels",
+            "rejected_input_ids",
+            "rejected_attention_mask",
+            "rejected_labels",
+            "prompt_input_ids",
+            "prompt_attention_mask",
+        ],
+    )
+
+    # Define a strict collator that refuses to operate on non-dictionary batches
+    class DictOnlyCollator:
+        """Collator that accepts only a list of dictionaries and stacks list values into tensors.
+
+        If the incoming batch is not a list of dicts, this will raise an error to
+        surface potential data formatting issues early.  It also converts Python
+        lists into ``torch.Tensor`` on the fly when necessary.
+        """
+
+        def __call__(self, features):
+            # Validate input batch structure
+            if not isinstance(features, list) or not features:
+                raise ValueError(
+                    f"Collator expected a non-empty list of dicts, got {type(features)}"
+                )
+            if not isinstance(features[0], dict):
+                raise ValueError(
+                    f"Collator expected list elements to be dicts, got {type(features[0])}"
+                )
+
+            batch = {}
+            keys = features[0].keys()
+            for k in keys:
+                # Collect all values for this key across the batch
+                vals = [f[k] for f in features]
+                # If already tensors, stack them
+                if torch.is_tensor(vals[0]):
+                    batch[k] = torch.stack(vals)
+                # If list of ints, convert to tensor
+                elif isinstance(vals[0], list):
+                    batch[k] = torch.tensor(vals, dtype=torch.long)
+                else:
+                    # For any other type, keep as-is in a list
+                    batch[k] = vals
+            return batch
+
+    data_collator = DictOnlyCollator()
+
     # Load the actual model and reference model (if any)
     model, ref_model, model_kwargs, ref_model_kwargs = setup_model(model_args, training_args)
 
@@ -360,6 +428,7 @@ def main_inner(model_args, data_args, training_args):
         max_prompt_length=training_args.max_prompt_length,
         peft_config=get_peft_config(model_args),
         loss_type=training_args.loss_type,
+        data_collator=data_collator,
     )
 
     # Use the tokenized dataset for training and also track the original raw
