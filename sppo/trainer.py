@@ -249,7 +249,9 @@ class SPPOTrainer(Trainer):
 
                 model.get_input_embeddings().register_forward_hook(make_inputs_require_grad)
 
-        if generate_during_eval and not is_wandb_available():
+        # ``is_wandb_available`` is a boolean indicating whether the wandb module is installed.
+        # We should not call it like a function.  Use the boolean directly.
+        if generate_during_eval and not is_wandb_available:
             raise ValueError(
                 "`generate_during_eval=True` requires Weights and Biases to be installed."
                 " Please install `wandb` to resolve."
@@ -1205,7 +1207,12 @@ class SPPOTrainer(Trainer):
             padding_value=self.padding_value,
             device=self.accelerator.device,
         )
-        len_chosen = batch["chosen_labels"].shape[0]
+        # ``len_chosen`` can be derived from ``chosen_labels`` or ``chosen_input_ids``.
+        # Use whichever exists to avoid KeyError if labels are absent.
+        if isinstance(batch, dict) and "chosen_labels" in batch and isinstance(batch["chosen_labels"], torch.Tensor):
+            len_chosen = batch["chosen_labels"].shape[0]
+        else:
+            len_chosen = batch["chosen_input_ids"].shape[0]
 
         model_kwargs = (
             {
