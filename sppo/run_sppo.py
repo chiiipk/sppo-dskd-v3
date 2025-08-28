@@ -1,4 +1,3 @@
-
 import logging
 import random
 import sys
@@ -25,9 +24,9 @@ from alignment import (
 
 from peft import PeftConfig, PeftModel
 from trainer import SPPOTrainer
-import trainer
-print("[DEBUG] Using trainer from:", trainer.__file__)
-
+# Also import the module itself so we can see which trainer file is being used
+import trainer as trainer_module
+print("[DEBUG] Using trainer from:", trainer_module.__file__)
 
 logger = logging.getLogger(__name__)
 
@@ -59,25 +58,29 @@ def load_and_process_datasets(data_args, tokenizer):
 
     # 2. Định nghĩa hàm để trích xuất văn bản
     def format_row(feature):
-        # Trích xuất văn bản từ lượt trả lời của assistant
-        # Dựa trên hình ảnh, 'chosen' và 'rejected' là list chứa 1 dict
-        # {"content": "...", "role": "..."}
-        if isinstance(feature["chosen"], list) and len(feature["chosen"]) > 0:
-            # Lấy phần tử đầu tiên của list và sau đó lấy giá trị của key "content"
-            feature["chosen"] = feature["chosen"][0].get("content", "")
-        else:
-            feature["chosen"] = "" # Đảm bảo luôn là string, ngay cả khi rỗng
+        """
+        Trích xuất văn bản từ cấu trúc danh sách và trả về một bản ghi mới.
 
-        if isinstance(feature["rejected"], list) and len(feature["rejected"]) > 0:
-            # Lấy phần tử đầu tiên của list và sau đó lấy giá trị của key "content"
-            feature["rejected"] = feature["rejected"][0].get("content", "")
+        'chosen' và 'rejected' trong dữ liệu thô là list chứa một dict với khóa
+        "content". Hàm này lấy nội dung đầu tiên và đảm bảo luôn trả về chuỗi.
+
+        Chúng ta tránh sửa đổi 'feature' tại chỗ để loại bỏ bất kỳ tham chiếu
+        Arrow/pyarrow nào còn sót lại; thay vào đó, trả về một dict mới.
+        """
+        prompt = feature.get("prompt", "")
+        # Extract chosen content
+        chosen_field = feature.get("chosen")
+        if isinstance(chosen_field, list) and len(chosen_field) > 0:
+            chosen = chosen_field[0].get("content", "")
         else:
-            feature["rejected"] = "" # Đảm bảo luôn là string, ngay cả khi rỗng
-        
-        # 'prompt' column is already VARCHAR, so it should be a string.
-        # No change needed for 'prompt' based on the provided schema.
-        
-        return feature
+            chosen = ""
+        # Extract rejected content
+        rejected_field = feature.get("rejected")
+        if isinstance(rejected_field, list) and len(rejected_field) > 0:
+            rejected = rejected_field[0].get("content", "")
+        else:
+            rejected = ""
+        return {"prompt": prompt, "chosen": chosen, "rejected": rejected}
 
     # 3. Áp dụng hàm trích xuất
     raw_datasets = raw_datasets.map(
@@ -214,6 +217,11 @@ def main_inner(model_args, data_args, training_args):
     raw_datasets = load_and_process_datasets(data_args, tokenizer)
 
     model, ref_model, model_kwargs, ref_model_kwargs = setup_model(model_args, training_args)
+
+    # Ensure we do not drop columns that are not model inputs.
+    # SPPOTrainer sets remove_unused_columns=False when using its default collator,
+    # but we set it explicitly here for clarity.
+    training_args.remove_unused_columns = False
 
     trainer = SPPOTrainer(
         model,
