@@ -1,8 +1,9 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
 import logging
-import random
 import sys
 import yaml
-import numpy as np  # Used for tokenization logic
 
 import torch
 import transformers
@@ -13,7 +14,6 @@ from alignment import (
     SPPOConfig,
     H4ArgumentParser,
     ModelArguments,
-    apply_chat_template,
     get_checkpoint,
     get_datasets,
     get_kbit_device_map,
@@ -25,15 +25,14 @@ from alignment import (
 
 from peft import PeftConfig, PeftModel
 from trainer import SPPOTrainer
-# Also import the module itself so we can see which trainer file is being used
-import trainer as trainer_module
-print("[DEBUG] Using trainer from:", trainer_module.__file__)
 
 logger = logging.getLogger(__name__)
 
+
 def load_config(config_path):
-    with open(config_path, 'r') as config_file:
-        return yaml.safe_load(config_file)
+    with open(config_path, "r") as f:
+        return yaml.safe_load(f)
+
 
 def setup_logging(log_level):
     logging.basicConfig(
@@ -46,58 +45,46 @@ def setup_logging(log_level):
     transformers.utils.logging.enable_default_handler()
     transformers.utils.logging.enable_explicit_format()
 
+
 def load_and_process_datasets(data_args, tokenizer):
     """
-    Hàm này tải dataset, trích xuất văn bản thô từ cấu trúc phức tạp,
-    và trả về một dataset sẵn sàng cho SPPOTrainer.
+    - Tải dataset gốc (các cột: prompt, chosen, rejected có thể ở dạng list-of-dict).
+    - Chuẩn hóa: đưa 'prompt', 'chosen', 'rejected' về string phẳng.
     """
-    # 1. Tải dữ liệu gốc
-    raw_datasets = get_datasets(data_args, splits=["train"])
+    raw = get_datasets(data_args, splits=["train"])
     logger.info(
-        f"Training on the following splits: {[split + ' : ' + str(dset.num_rows) for split, dset in raw_datasets.items()]}"
+        "Training on splits: %s",
+        [f"{k}: {v.num_rows}" for k, v in raw.items()],
     )
 
-    # 2. Định nghĩa hàm để trích xuất văn bản
-    def format_row(feature):
-        """
-        Trích xuất văn bản từ cấu trúc danh sách và trả về một bản ghi mới.
+    def format_row(example):
+        def _extract(x):
+            if isinstance(x, list) and len(x) > 0 and isinstance(x[0], dict):
+                return x[0].get("content", "")
+            if isinstance(x, str):
+                return x
+            return ""
+        return {
+            "prompt": _extract(example.get("prompt", "")),
+            "chosen": _extract(example.get("chosen", "")),
+            "rejected": _extract(example.get("rejected", "")),
+        }
 
-        'chosen' và 'rejected' trong dữ liệu thô là list chứa một dict với khóa
-        "content". Hàm này lấy nội dung đầu tiên và đảm bảo luôn trả về chuỗi.
-
-        Chúng ta tránh sửa đổi 'feature' tại chỗ để loại bỏ bất kỳ tham chiếu
-        Arrow/pyarrow nào còn sót lại; thay vào đó, trả về một dict mới.
-        """
-        prompt = feature.get("prompt", "")
-        # Extract chosen content
-        chosen_field = feature.get("chosen")
-        if isinstance(chosen_field, list) and len(chosen_field) > 0:
-            chosen = chosen_field[0].get("content", "")
-        else:
-            chosen = ""
-        # Extract rejected content
-        rejected_field = feature.get("rejected")
-        if isinstance(rejected_field, list) and len(rejected_field) > 0:
-            rejected = rejected_field[0].get("content", "")
-        else:
-            rejected = ""
-        return {"prompt": prompt, "chosen": chosen, "rejected": rejected}
-
-    # 3. Áp dụng hàm trích xuất
-    raw_datasets = raw_datasets.map(
+    raw = raw.map(
         format_row,
         num_proc=data_args.preprocessing_num_workers,
-        desc="Formatting raw strings from STRUCT"
+        desc="Normalize raw fields",
     )
+    return raw
 
-    return raw_datasets
 
 def setup_model(model_args, training_args):
     torch_dtype = (
-        model_args.torch_dtype if model_args.torch_dtype in ["auto", None] else getattr(torch, model_args.torch_dtype)
+        model_args.torch_dtype
+        if model_args.torch_dtype in ["auto", None]
+        else getattr(torch, model_args.torch_dtype)
     )
     quantization_config = get_quantization_config(model_args)
-
     model_kwargs = dict(
         revision=model_args.model_revision,
         trust_remote_code=model_args.trust_remote_code,
@@ -106,15 +93,15 @@ def setup_model(model_args, training_args):
         device_map=get_kbit_device_map() if quantization_config is not None else None,
         quantization_config=quantization_config,
     )
-    
     if "gpt2" not in model_args.model_name_or_path.lower():
         model_kwargs["use_flash_attention_2"] = model_args.use_flash_attention_2
 
-    model = model_args.model_name_or_path
-    if is_adapter_model(model, model_args.model_revision):
-        logger.info(f"Loading SFT adapter for {model_args.model_name_or_path=}")
-        peft_config = PeftConfig.from_pretrained(model_args.model_name_or_path, revision=model_args.model_revision)
-        model_kwargs = dict(
+    # Adapter?
+    model_id = model_args.model_name_or_path
+    if is_adapter_model(model_id, model_args.model_revision):
+        logger.info("Loading base+adapter for %s", model_id)
+        peft_conf = PeftConfig.from_pretrained(model_id, revision=model_args.model_revision)
+        base_kwargs = dict(
             revision=model_args.base_model_revision,
             trust_remote_code=model_args.trust_remote_code,
             torch_dtype=torch_dtype,
@@ -122,133 +109,105 @@ def setup_model(model_args, training_args):
             device_map=get_kbit_device_map() if quantization_config is not None else None,
             quantization_config=quantization_config,
         )
-        
-        if "gpt2" not in peft_config.base_model_name_or_path.lower():
-            model_kwargs["use_flash_attention_2"] = model_args.use_flash_attention_2
-        base_model = AutoModelForCausalLM.from_pretrained(
-            peft_config.base_model_name_or_path,
-            **model_kwargs,
-        )
-        model = PeftModel.from_pretrained(
-            base_model,
-            model_args.model_name_or_path,
-            revision=model_args.model_revision,
-        )
-        model_kwargs = None
+        if "gpt2" not in peft_conf.base_model_name_or_path.lower():
+            base_kwargs["use_flash_attention_2"] = model_args.use_flash_attention_2
 
-    ref_model = model
-    ref_model_kwargs = model_kwargs
+        base = AutoModelForCausalLM.from_pretrained(peft_conf.base_model_name_or_path, **base_kwargs)
+        model = PeftModel.from_pretrained(base, model_id, revision=model_args.model_revision)
+        ref_model = model
+        model_kwargs = None
+        ref_model_kwargs = None
+    else:
+        model = model_id  # để SPPOTrainer tự from_pretrained
+        ref_model = model
+        ref_model_kwargs = model_kwargs
 
     if model_args.use_peft:
+        # Khi train LoRA, ref_model sẽ = None (DPO/ SPPO sẽ dùng implicit ref)
         ref_model = None
         ref_model_kwargs = None
 
     return model, ref_model, model_kwargs, ref_model_kwargs
 
-def train_and_evaluate(trainer, raw_datasets, training_args):
+
+def train_and_evaluate(trainer: SPPOTrainer, raw_datasets, training_args):
     checkpoint = None
-    train_result = trainer.train(resume_from_checkpoint=checkpoint)
-    metrics = train_result.metrics
+    result = trainer.train(resume_from_checkpoint=checkpoint)
+    metrics = result.metrics
     metrics["train_samples"] = len(raw_datasets["train"])
     trainer.log_metrics("train", metrics)
     trainer.save_metrics("train", metrics)
     trainer.save_state()
-
     logger.info("*** Training complete ***")
 
-    if training_args.do_eval:
-        logger.info("*** Evaluate ***")
-        metrics = trainer.evaluate()
-        metrics["eval_samples"] = len(raw_datasets["test"])
-        trainer.log_metrics("eval", metrics)
-        trainer.save_metrics("eval", metrics)
 
-def save_model_and_results(trainer, training_args, model_args, data_args):
+def save_model_and_results(trainer: SPPOTrainer, training_args, model_args, data_args):
     logger.info("*** Save model ***")
     trainer.save_model(training_args.output_dir)
-    logger.info(f"Model saved to {training_args.output_dir}")
+    logger.info("Model saved to %s", training_args.output_dir)
 
-    kwargs = {
-        "finetuned_from": model_args.model_name_or_path,
-        "dataset": list(data_args.dataset_mixer.keys()),
-        "dataset_tags": list(data_args.dataset_mixer.keys()),
-        "tags": ["alignment-handbook"],
-    }
     if trainer.accelerator.is_main_process:
+        kwargs = {
+            "finetuned_from": model_args.model_name_or_path,
+            "dataset": list(data_args.dataset_mixer.keys()),
+            "dataset_tags": list(data_args.dataset_mixer.keys()),
+            "tags": ["alignment-handbook"],
+        }
         trainer.create_model_card(**kwargs)
         trainer.model.config.use_cache = True
         trainer.model.config.save_pretrained(training_args.output_dir)
 
-    # if training_args.push_to_hub:
-    #     logger.info("Pushing to hub...")
-    #     trainer.push_to_hub(**kwargs)
-
     trainer.accelerator.wait_for_everyone()
-    logger.info("*** Training complete! ***")
+    logger.info("*** Done! ***")
+
 
 def main():
     parser = H4ArgumentParser((ModelArguments, DataArguments, SPPOConfig))
     model_args, data_args, training_args = parser.parse()
+    # ta chỉ train
     training_args.do_eval = False
-    num_iteration = 1
 
     try:
-        for i in range(num_iteration):
-            main_inner(model_args, data_args, training_args)
-            print(f"-------------------------Finished Iteration {i+1}---------------------------------")
+        main_inner(model_args, data_args, training_args)
     except Exception as e:
-        logger.error(f"An error occurred: {str(e)}")
+        logger.error("Fatal error: %s", e)
         raise
+
 
 def main_inner(model_args, data_args, training_args):
     setup_logging(training_args.get_process_log_level())
 
-    logger.info(f"Model parameters {model_args}")
-    logger.info(f"Data parameters {data_args}")
-    logger.info(f"Training/evaluation parameters {training_args}")
-
-    last_checkpoint = get_checkpoint(training_args)
-    if last_checkpoint is not None and training_args.resume_from_checkpoint is None:
-        logger.info(f"Checkpoint detected, resuming training at {last_checkpoint=}.")
+    last_ckpt = get_checkpoint(training_args)
+    if last_ckpt and training_args.resume_from_checkpoint is None:
+        logger.info("Resuming from detected checkpoint: %s", last_ckpt)
 
     set_seed(training_args.seed)
 
+    # tokenizer & raw data
     data_args.truncation_side = "left"
     tokenizer = get_tokenizer(model_args, data_args)
 
-    # Some models (e.g. GPT-2) do not have a pad token defined.  The
-    # DPODataCollatorWithPadding relies on pad_token_id when constructing
-    # batches, so we assign the end-of-sequence token as the pad token
-    # if none is present.  Without this, collators may treat sequences of
-    # different lengths as strings or lists, triggering downstream errors.
+    # đảm bảo có pad token
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token_id = tokenizer.eos_token_id
-    raw_datasets = load_and_process_datasets(data_args, tokenizer)
 
-    # -------------------------------------------------------------------------
-    # Tokenize the dataset up front using custom logic adapted from
-    # SPPOTrainer.tokenize_row. This avoids relying on internal mapping logic
-    # of SPPOTrainer and ensures the training dataset already contains
-    # `chosen_input_ids`, `rejected_input_ids`, etc. We handle truncation and
-    # label masking similar to the original implementation.
+    raw = load_and_process_datasets(data_args, tokenizer)
 
-    # Helper to build tokenized answer relative to a prompt.
+    # -------- Tokenize upfront (giống SPPOTrainer.tokenize_row) ----------
     def build_tokenized_answer(prompt: str, answer: str):
-        # Tokenize combined sequence without adding special tokens to examine merges
-        full_tokenized = tokenizer(prompt + answer, add_special_tokens=False)
-        full_input_ids = full_tokenized["input_ids"]
-        full_attention = full_tokenized["attention_mask"]
-        prompt_only_ids = tokenizer(prompt, add_special_tokens=False)["input_ids"]
-        # Determine start index of answer tokens, adjusting for tokenizer merges
-        resp_start = len(prompt_only_ids)
-        # If the prompt tokens differ when tokenized together with answer, step back one token
-        if prompt_only_ids != full_input_ids[:resp_start]:
-            resp_start -= 1
-        # Split into prompt and answer pieces
-        prompt_ids = full_input_ids[:resp_start]
-        prompt_attn = full_attention[:resp_start]
-        ans_ids = full_input_ids[resp_start:]
-        ans_attn = full_attention[resp_start:]
+        full = tokenizer(prompt + answer, add_special_tokens=False)
+        full_ids = full["input_ids"]
+        full_attn = full["attention_mask"]
+        p_ids = tokenizer(prompt, add_special_tokens=False)["input_ids"]
+
+        start = len(p_ids)
+        if p_ids != full_ids[:start]:
+            start -= 1
+
+        prompt_ids = full_ids[:start]
+        prompt_attn = full_attn[:start]
+        ans_ids = full_ids[start:]
+        ans_attn = full_attn[start:]
         return {
             "prompt_input_ids": prompt_ids,
             "prompt_attention_mask": prompt_attn,
@@ -256,131 +215,113 @@ def main_inner(model_args, data_args, training_args):
             "attention_mask": ans_attn,
         }
 
-    # Main tokenization function for each example
-    def tokenize_example(example):
-        prompt = example["prompt"]
-        chosen = example["chosen"]
-        rejected = example["rejected"]
-        # Tokenize prompt and answers
-        _pt = tokenizer(prompt, add_special_tokens=False)
-        prompt_tokens = {f"prompt_{k}": v for k, v in _pt.items()}
+    def tokenize_example(ex):
+        prompt = ex["prompt"]
+        chosen = ex["chosen"]
+        rejected = ex["rejected"]
+
+        pt = tokenizer(prompt, add_special_tokens=False)
+        prompt_tokens = {f"prompt_{k}": v for k, v in pt.items()}
+
         chosen_tokens = build_tokenized_answer(prompt, chosen)
         rejected_tokens = build_tokenized_answer(prompt, rejected)
-        # Align prompt length across chosen and rejected answers
-        chosen_len = len(chosen_tokens["prompt_input_ids"])
-        rejected_len = len(rejected_tokens["prompt_input_ids"])
-        prompt_len = min(chosen_len, rejected_len)
+
+        c_len = len(chosen_tokens["prompt_input_ids"])
+        r_len = len(rejected_tokens["prompt_input_ids"])
+        keep = min(c_len, r_len)
         for k in prompt_tokens:
-            prompt_tokens[k] = prompt_tokens[k][:prompt_len]
-        # Ensure only last token differs
-        num_diff_tokens = sum(
+            prompt_tokens[k] = prompt_tokens[k][:keep]
+
+        # sanity (merge khác nhau chỉ ở cuối)
+        diff_tok = sum(
             a != b
             for a, b in zip(chosen_tokens["prompt_input_ids"], rejected_tokens["prompt_input_ids"])
         )
-        num_diff_len = abs(chosen_len - rejected_len)
-        if num_diff_tokens > 1 or num_diff_len > 1:
+        if diff_tok > 1 or abs(c_len - r_len) > 1:
+            # hiếm khi xảy ra, nhưng ta cứ fail rõ ràng
             raise ValueError(
-                "Chosen and rejected prompt_input_ids might only differ on the last token due to tokenizer merge ops."
+                "chosen/rejected prompt tokens differ by more than 1 (merge issue)."
             )
-        # Add BOS token
-        bos = tokenizer.bos_token_id
-        prompt_tokens["prompt_input_ids"] = [bos] + prompt_tokens["prompt_input_ids"]
-        chosen_tokens["prompt_input_ids"] = [bos] + chosen_tokens["prompt_input_ids"]
-        rejected_tokens["prompt_input_ids"] = [bos] + rejected_tokens["prompt_input_ids"]
-        prompt_tokens["prompt_attention_mask"] = [1] + prompt_tokens["prompt_attention_mask"]
-        chosen_tokens["prompt_attention_mask"] = [1] + chosen_tokens["prompt_attention_mask"]
-        rejected_tokens["prompt_attention_mask"] = [1] + rejected_tokens["prompt_attention_mask"]
-        # Add EOS token to answers
-        eos = tokenizer.eos_token_id
-        chosen_tokens["input_ids"].append(eos)
-        chosen_tokens["attention_mask"].append(1)
-        rejected_tokens["input_ids"].append(eos)
-        rejected_tokens["attention_mask"].append(1)
-        # Handle truncation if necessary
-        max_len = training_args.max_length if training_args.max_length is not None else 512
-        max_prompt = training_args.max_prompt_length if training_args.max_prompt_length is not None else 128
-        trunc_mode = getattr(training_args, "truncation_mode", "keep_end")
-        longer_resp_len = max(len(chosen_tokens["input_ids"]), len(rejected_tokens["input_ids"]))
-        for ans_tok in [chosen_tokens, rejected_tokens, prompt_tokens]:
-            if len(ans_tok["prompt_input_ids"]) + longer_resp_len > max_len:
-                if trunc_mode == "keep_start":
-                    for k in ["prompt_input_ids", "prompt_attention_mask"]:
-                        ans_tok[k] = ans_tok[k][:max_prompt]
-                elif trunc_mode == "keep_end":
-                    for k in ["prompt_input_ids", "prompt_attention_mask"]:
-                        ans_tok[k] = ans_tok[k][-max_prompt:]
-                else:
-                    raise ValueError(f"Unknown truncation mode: {trunc_mode}")
-        for ans_tok in [chosen_tokens, rejected_tokens]:
-            if len(ans_tok["prompt_input_ids"]) + longer_resp_len > max_len:
-                for k in ["input_ids", "attention_mask"]:
-                    ans_tok[k] = ans_tok[k][: max_len - max_prompt ]
-        # Build full sequences and labels
-        chosen_seq = {
-            k: chosen_tokens[f"prompt_{k}"] + chosen_tokens[k] for k in ["input_ids", "attention_mask"]
-        }
-        rejected_seq = {
-            k: rejected_tokens[f"prompt_{k}"] + rejected_tokens[k] for k in ["input_ids", "attention_mask"]
-        }
-        # Labels: mask prompt tokens with -100
-        label_pad = -100
-        chosen_seq["labels"] = list(chosen_seq["input_ids"])
-        rejected_seq["labels"] = list(rejected_seq["input_ids"])
-        chosen_prompt_len = len(chosen_tokens["prompt_input_ids"])
-        rejected_prompt_len = len(rejected_tokens["prompt_input_ids"])
-        chosen_seq["labels"][:chosen_prompt_len] = [label_pad] * chosen_prompt_len
-        rejected_seq["labels"][:rejected_prompt_len] = [label_pad] * rejected_prompt_len
-        # Assemble final feature dict
-        result = {}
-        for prefix, toks in [("chosen_", chosen_seq), ("rejected_", rejected_seq), ("", prompt_tokens)]:
-            for key, val in toks.items():
-                if key == "token_type_ids":
-                    continue
-                result[f"{prefix}{key}"] = val
-        return result
 
-    # Tokenize entire training set
-    tokenized_train = raw_datasets["train"].map(
+        # BOS
+        bos = tokenizer.bos_token_id
+        for dic in (prompt_tokens, chosen_tokens, rejected_tokens):
+            dic["prompt_input_ids"] = [bos] + dic["prompt_input_ids"]
+            dic["prompt_attention_mask"] = [1] + dic["prompt_attention_mask"]
+
+        # EOS vào answer
+        eos = tokenizer.eos_token_id
+        for dic in (chosen_tokens, rejected_tokens):
+            dic["input_ids"].append(eos)
+            dic["attention_mask"].append(1)
+
+        max_len = training_args.max_length or 512
+        max_prompt = training_args.max_prompt_length or 128
+        longer = max(len(chosen_tokens["input_ids"]), len(rejected_tokens["input_ids"]))
+
+        # truncate prompt nếu cần
+        for dic in (prompt_tokens, chosen_tokens, rejected_tokens):
+            if len(dic["prompt_input_ids"]) + longer > max_len:
+                if getattr(training_args, "truncation_mode", "keep_end") == "keep_start":
+                    dic["prompt_input_ids"] = dic["prompt_input_ids"][:max_prompt]
+                    dic["prompt_attention_mask"] = dic["prompt_attention_mask"][:max_prompt]
+                else:
+                    dic["prompt_input_ids"] = dic["prompt_input_ids"][-max_prompt:]
+                    dic["prompt_attention_mask"] = dic["prompt_attention_mask"][-max_prompt:]
+
+        # truncate answer nếu vẫn quá dài
+        for dic in (chosen_tokens, rejected_tokens):
+            if len(dic["prompt_input_ids"]) + longer > max_len:
+                cut = max_len - max_prompt
+                dic["input_ids"] = dic["input_ids"][:cut]
+                dic["attention_mask"] = dic["attention_mask"][:cut]
+
+        # build full + labels (mask prompt bằng -100)
+        def _seq_from(dic):
+            ids = dic["prompt_input_ids"] + dic["input_ids"]
+            attn = dic["prompt_attention_mask"] + dic["attention_mask"]
+            labels = ids[:]
+            labels[: len(dic["prompt_input_ids"])] = [-100] * len(dic["prompt_input_ids"])
+            return {"input_ids": ids, "attention_mask": attn, "labels": labels}
+
+        chosen_seq = _seq_from(chosen_tokens)
+        rejected_seq = _seq_from(rejected_tokens)
+
+        out = {}
+        for prefix, dic in (("chosen_", chosen_seq), ("rejected_", rejected_seq), ("", prompt_tokens)):
+            for k, v in dic.items():
+                if k == "token_type_ids":
+                    continue
+                out[f"{prefix}{k}"] = v
+        return out
+
+    tokenized_train = raw["train"].map(
         tokenize_example,
-        remove_columns=raw_datasets["train"].column_names,
-        desc="Tokenizing dataset for SPPOTrainer"
+        remove_columns=raw["train"].column_names,
+        desc="Tokenizing dataset (upfront)",
     )
 
-    # ---------------------------------------------------------------------
-    # Ensure each feature is converted to a PyTorch tensor.  HuggingFace
-    # datasets by default return Python lists for sequence features which can
-    # sometimes be treated as strings by generic data collators.  Setting
-    # the format to ``torch`` explicitly here ensures that every item in the
-    # dataset yields a dictionary of torch tensors.  This, together with
-    # the custom collator below, prevents the infamous "Batch is a string"
-    # failure during training.
+    # Quan trọng: luôn trả tensor cho DataLoader
     tokenized_train = tokenized_train.with_format(
         type="torch",
         columns=[
-            "chosen_input_ids",
-            "chosen_attention_mask",
-            "chosen_labels",
-            "rejected_input_ids",
-            "rejected_attention_mask",
-            "rejected_labels",
-            "prompt_input_ids",
-            "prompt_attention_mask",
+            "chosen_input_ids", "chosen_attention_mask", "chosen_labels",
+            "rejected_input_ids", "rejected_attention_mask", "rejected_labels",
+            "prompt_input_ids", "prompt_attention_mask",
         ],
     )
 
-
-    # Load the actual model and reference model (if any)
+    # model & trainer
     model, ref_model, model_kwargs, ref_model_kwargs = setup_model(model_args, training_args)
 
-    # Ensure we do not drop columns that are not model inputs.
+    # bắt buộc để không drop field
     training_args.remove_unused_columns = False
+    # tránh worker phụ pad lẫn lộn
+    training_args.dataloader_num_workers = 0
 
-    # Instantiate the SPPOTrainer with the tokenized dataset. Because the
-    # dataset already contains tokenized fields, the internal `_map_dataset`
-    # will skip further tokenization.
     trainer = SPPOTrainer(
-        model,
-        ref_model,
+        model=model,
+        ref_model=ref_model,
         model_init_kwargs=model_kwargs,
         ref_model_init_kwargs=ref_model_kwargs,
         args=training_args,
@@ -391,19 +332,12 @@ def main_inner(model_args, data_args, training_args):
         max_prompt_length=training_args.max_prompt_length,
         peft_config=get_peft_config(model_args),
         loss_type=training_args.loss_type,
-        # Do not pass a custom data_collator here.  Leaving data_collator as None
-        # allows the SPPOTrainer to construct a DPODataCollatorWithPadding which
-        # properly pads variable-length sequences.  Passing our own collator
-        # without padding caused runtime errors when stacking tensors of
-        # different lengths.
+        data_collator=None,  # => dùng DPODataCollatorWithPadding mặc định
     )
 
-    # Use the tokenized dataset for training and also track the original raw
-    # dataset for logging purposes (e.g., number of samples). We pass the
-    # original `raw_datasets` into train_and_evaluate only for logging
-    # `train_samples`, but training will use `tokenized_train` internally.
-    train_and_evaluate(trainer, raw_datasets, training_args)
+    train_and_evaluate(trainer, raw, training_args)
     save_model_and_results(trainer, training_args, model_args, data_args)
+
 
 if __name__ == "__main__":
     main()
