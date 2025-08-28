@@ -2,6 +2,7 @@ import logging
 import random
 import sys
 import yaml
+import numpy as np  # Used for tokenization logic
 
 import torch
 import transformers
@@ -216,13 +217,136 @@ def main_inner(model_args, data_args, training_args):
     tokenizer = get_tokenizer(model_args, data_args)
     raw_datasets = load_and_process_datasets(data_args, tokenizer)
 
+    # -------------------------------------------------------------------------
+    # Tokenize the dataset up front using custom logic adapted from
+    # SPPOTrainer.tokenize_row. This avoids relying on internal mapping logic
+    # of SPPOTrainer and ensures the training dataset already contains
+    # `chosen_input_ids`, `rejected_input_ids`, etc. We handle truncation and
+    # label masking similar to the original implementation.
+
+    # Helper to build tokenized answer relative to a prompt.
+    def build_tokenized_answer(prompt: str, answer: str):
+        # Tokenize combined sequence without adding special tokens to examine merges
+        full_tokenized = tokenizer(prompt + answer, add_special_tokens=False)
+        full_input_ids = full_tokenized["input_ids"]
+        full_attention = full_tokenized["attention_mask"]
+        prompt_only_ids = tokenizer(prompt, add_special_tokens=False)["input_ids"]
+        # Determine start index of answer tokens, adjusting for tokenizer merges
+        resp_start = len(prompt_only_ids)
+        # If the prompt tokens differ when tokenized together with answer, step back one token
+        if prompt_only_ids != full_input_ids[:resp_start]:
+            resp_start -= 1
+        # Split into prompt and answer pieces
+        prompt_ids = full_input_ids[:resp_start]
+        prompt_attn = full_attention[:resp_start]
+        ans_ids = full_input_ids[resp_start:]
+        ans_attn = full_attention[resp_start:]
+        return {
+            "prompt_input_ids": prompt_ids,
+            "prompt_attention_mask": prompt_attn,
+            "input_ids": ans_ids,
+            "attention_mask": ans_attn,
+        }
+
+    # Main tokenization function for each example
+    def tokenize_example(example):
+        prompt = example["prompt"]
+        chosen = example["chosen"]
+        rejected = example["rejected"]
+        # Tokenize prompt and answers
+        _pt = tokenizer(prompt, add_special_tokens=False)
+        prompt_tokens = {f"prompt_{k}": v for k, v in _pt.items()}
+        chosen_tokens = build_tokenized_answer(prompt, chosen)
+        rejected_tokens = build_tokenized_answer(prompt, rejected)
+        # Align prompt length across chosen and rejected answers
+        chosen_len = len(chosen_tokens["prompt_input_ids"])
+        rejected_len = len(rejected_tokens["prompt_input_ids"])
+        prompt_len = min(chosen_len, rejected_len)
+        for k in prompt_tokens:
+            prompt_tokens[k] = prompt_tokens[k][:prompt_len]
+        # Ensure only last token differs
+        num_diff_tokens = sum(
+            a != b
+            for a, b in zip(chosen_tokens["prompt_input_ids"], rejected_tokens["prompt_input_ids"])
+        )
+        num_diff_len = abs(chosen_len - rejected_len)
+        if num_diff_tokens > 1 or num_diff_len > 1:
+            raise ValueError(
+                "Chosen and rejected prompt_input_ids might only differ on the last token due to tokenizer merge ops."
+            )
+        # Add BOS token
+        bos = tokenizer.bos_token_id
+        prompt_tokens["prompt_input_ids"] = [bos] + prompt_tokens["prompt_input_ids"]
+        chosen_tokens["prompt_input_ids"] = [bos] + chosen_tokens["prompt_input_ids"]
+        rejected_tokens["prompt_input_ids"] = [bos] + rejected_tokens["prompt_input_ids"]
+        prompt_tokens["prompt_attention_mask"] = [1] + prompt_tokens["prompt_attention_mask"]
+        chosen_tokens["prompt_attention_mask"] = [1] + chosen_tokens["prompt_attention_mask"]
+        rejected_tokens["prompt_attention_mask"] = [1] + rejected_tokens["prompt_attention_mask"]
+        # Add EOS token to answers
+        eos = tokenizer.eos_token_id
+        chosen_tokens["input_ids"].append(eos)
+        chosen_tokens["attention_mask"].append(1)
+        rejected_tokens["input_ids"].append(eos)
+        rejected_tokens["attention_mask"].append(1)
+        # Handle truncation if necessary
+        max_len = training_args.max_length if training_args.max_length is not None else 512
+        max_prompt = training_args.max_prompt_length if training_args.max_prompt_length is not None else 128
+        trunc_mode = getattr(training_args, "truncation_mode", "keep_end")
+        longer_resp_len = max(len(chosen_tokens["input_ids"]), len(rejected_tokens["input_ids"]))
+        for ans_tok in [chosen_tokens, rejected_tokens, prompt_tokens]:
+            if len(ans_tok["prompt_input_ids"]) + longer_resp_len > max_len:
+                if trunc_mode == "keep_start":
+                    for k in ["prompt_input_ids", "prompt_attention_mask"]:
+                        ans_tok[k] = ans_tok[k][:max_prompt]
+                elif trunc_mode == "keep_end":
+                    for k in ["prompt_input_ids", "prompt_attention_mask"]:
+                        ans_tok[k] = ans_tok[k][-max_prompt:]
+                else:
+                    raise ValueError(f"Unknown truncation mode: {trunc_mode}")
+        for ans_tok in [chosen_tokens, rejected_tokens]:
+            if len(ans_tok["prompt_input_ids"]) + longer_resp_len > max_len:
+                for k in ["input_ids", "attention_mask"]:
+                    ans_tok[k] = ans_tok[k][: max_len - max_prompt ]
+        # Build full sequences and labels
+        chosen_seq = {
+            k: chosen_tokens[f"prompt_{k}"] + chosen_tokens[k] for k in ["input_ids", "attention_mask"]
+        }
+        rejected_seq = {
+            k: rejected_tokens[f"prompt_{k}"] + rejected_tokens[k] for k in ["input_ids", "attention_mask"]
+        }
+        # Labels: mask prompt tokens with -100
+        label_pad = -100
+        chosen_seq["labels"] = list(chosen_seq["input_ids"])
+        rejected_seq["labels"] = list(rejected_seq["input_ids"])
+        chosen_prompt_len = len(chosen_tokens["prompt_input_ids"])
+        rejected_prompt_len = len(rejected_tokens["prompt_input_ids"])
+        chosen_seq["labels"][:chosen_prompt_len] = [label_pad] * chosen_prompt_len
+        rejected_seq["labels"][:rejected_prompt_len] = [label_pad] * rejected_prompt_len
+        # Assemble final feature dict
+        result = {}
+        for prefix, toks in [("chosen_", chosen_seq), ("rejected_", rejected_seq), ("", prompt_tokens)]:
+            for key, val in toks.items():
+                if key == "token_type_ids":
+                    continue
+                result[f"{prefix}{key}"] = val
+        return result
+
+    # Tokenize entire training set
+    tokenized_train = raw_datasets["train"].map(
+        tokenize_example,
+        remove_columns=raw_datasets["train"].column_names,
+        desc="Tokenizing dataset for SPPOTrainer"
+    )
+
+    # Load the actual model and reference model (if any)
     model, ref_model, model_kwargs, ref_model_kwargs = setup_model(model_args, training_args)
 
     # Ensure we do not drop columns that are not model inputs.
-    # SPPOTrainer sets remove_unused_columns=False when using its default collator,
-    # but we set it explicitly here for clarity.
     training_args.remove_unused_columns = False
 
+    # Instantiate the SPPOTrainer with the tokenized dataset. Because the
+    # dataset already contains tokenized fields, the internal `_map_dataset`
+    # will skip further tokenization.
     trainer = SPPOTrainer(
         model,
         ref_model,
@@ -230,7 +354,7 @@ def main_inner(model_args, data_args, training_args):
         ref_model_init_kwargs=ref_model_kwargs,
         args=training_args,
         beta=training_args.beta,
-        train_dataset=raw_datasets["train"],
+        train_dataset=tokenized_train,
         tokenizer=tokenizer,
         max_length=training_args.max_length,
         max_prompt_length=training_args.max_prompt_length,
@@ -238,6 +362,10 @@ def main_inner(model_args, data_args, training_args):
         loss_type=training_args.loss_type,
     )
 
+    # Use the tokenized dataset for training and also track the original raw
+    # dataset for logging purposes (e.g., number of samples). We pass the
+    # original `raw_datasets` into train_and_evaluate only for logging
+    # `train_samples`, but training will use `tokenized_train` internally.
     train_and_evaluate(trainer, raw_datasets, training_args)
     save_model_and_results(trainer, training_args, model_args, data_args)
 
