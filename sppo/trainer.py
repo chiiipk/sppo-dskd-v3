@@ -1373,18 +1373,11 @@ class SPPOTrainer(Trainer):
         return_outputs=False,
         num_items_in_batch=None,
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, Dict[str, torch.Tensor]]]:
-        # If inputs is a raw string, skip this example and return zero loss to avoid crashes
-        if isinstance(inputs, str):
-            # We can't compute loss on a raw prompt string; log a warning and skip
-            import warnings
-            warnings.warn(
-                "Skipping an unprocessed string batch in compute_loss; check your data preprocessing."
-            )
-            # Return zero loss; no metrics
-            loss = torch.tensor(0.0, dtype=torch.float, device=model.device)
-            if return_outputs:
-                return (loss, {})
-            return loss
+        # Previously, this method skipped processing if `inputs` was a raw string and returned zero loss.
+        # That approach avoided crashes but silently skipped training on the offending batch. In this
+        # version, we assume the dataset has been properly tokenized ahead of time, so `inputs` should
+        # always be a dictionary. If a raw string somehow appears, downstream checks will catch it and
+        # raise an informative error.
         # --- DEBUG START: compute_loss ---
         try:
             import os as _os
@@ -1462,19 +1455,9 @@ class SPPOTrainer(Trainer):
         except Exception as _e:
             print(f"[DEBUG_SPPO_TRAINING_STEP] Rank {_rank_id}: Failed to inspect inputs in training_step: {_e}")
         # --- DEBUG END: training_step ---
-        # Short-circuit if this batch is a raw string. In some edge-cases the data collator
-        # does not get applied and we end up with a single prompt string here. Returning
-        # a zero loss for such a batch allows training to continue without crashing.
-        # We do this *after* the debug prints so we can still see what the offending
-        # content looks like in the logs.
-        if isinstance(inputs, str):
-            import warnings
-            warnings.warn(
-                "Skipping an unprocessed string batch in training_step; check your data preprocessing."
-            )
-            # Return a zero scalar loss on the correct device. This avoids further processing of this batch.
-            loss = torch.tensor(0.0, dtype=torch.float32, device=model.device)
-            return loss
+        # Previously, we short-circuited on string inputs here and returned a zero loss. Now we assume
+        # that the training dataset has been properly tokenized to avoid such scenarios. If a string
+        # somehow appears at this stage, it will be caught later in `compute_loss` or `concatenated_inputs`.
 
         # Gọi phương thức compute_loss của SPPOTrainer
         with self.accelerator.accumulate(model):
